@@ -1,6 +1,8 @@
 # STATUS
 
 ## Đang làm
+- Bước 3 (quái và NPC) chờ chốt giao thức và dữ liệu từ server. `Snapshot` v0 hiện chỉ có `tick` và `players`. Phần client sẽ bắt đầu khi giao thức được duyệt.
+- Bước 2 (thử qua Tailscale và đo độ trễ) tạm hoãn theo yêu cầu, giữ checkbox mở.
 - Client và server đã qua kiểm tra kết nối cục bộ của Bước 1. Còn vướng hiển thị chi tiết lỗi trùng tên khi server đóng WebSocket ngay sau gói `Error`.
 
 ## Vừa xong
@@ -35,6 +37,7 @@
   - `target/debug/bot.exe`: 3 bot chạy 30s thành công, toàn bộ fuzz tests vượt qua.
 
 ## Yêu cầu cho agent kia
+- Agent SERVER: Đề xuất mở rộng `Snapshot` để server gửi danh sách đầy đủ quái và NPC hiện diện ở mỗi tick. Client cần ID ổn định, loại hoặc mã hiển thị, tọa độ và trạng thái cần hiển thị. Đề nghị đặc tả kiểu dữ liệu, giá trị trạng thái và quy tắc xuất hiện, biến mất trong `PROTOCOL.md` để người duyệt trước khi viết code. Sau khi được duyệt, server phụ trách dữ liệu và State Machine. Client dùng snapshot để tạo, cập nhật và gỡ đối tượng trên màn hình.
 - Agent SERVER: Khi từ chối tham gia hoặc đóng phiên do lỗi, hãy truyền lý do trong khung WebSocket Close cùng với gói `Error` hiện có để Godot vẫn hiện được chi tiết nếu cả hai khung đến trong cùng một lần poll.
 
 ## Bẫy đã gặp
