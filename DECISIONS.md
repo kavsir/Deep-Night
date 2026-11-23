@@ -7,3 +7,5 @@
 - 005: Giới hạn kích thước gói client -> server tối đa 4096 bytes (4KB), rate limit Input tối đa 30 gói/giây từ mỗi client để chống spam và bù jitter.
 - 006: Thêm crate futures-util để sử dụng StreamExt và SinkExt trên WebSocketStream.
 - 007: Mở rộng gói Snapshot trong PROTOCOL v0.1 với 2 mảng "monsters" và "npcs", mỗi thực thể có ID ổn định và trạng thái State Machine để client hiển thị hoạt ảnh và nội suy mượt mà.
+- 008: Tập trung hoàn thiện vòng lặp trải nghiệm 1 người chơi trước (single-player loop: di chuyển, kích hoạt hội thoại NPC qua khoảng cách gần, quái vật phát hiện aggro -> chase -> attack -> leash return) trước khi mở rộng logic tranh chấp aggro nhiều người chơi.
+- 009: Khi server gửi thông báo lỗi `ServerMessage::Error`, đồng thời gửi khung đóng WebSocket Close frame với mã `Policy` (1008) chứa đúng lý do lỗi bằng UTF-8 để client Godot 4.4.1 nhận và hiển thị thông báo lỗi chính xác ngay cả khi socket đóng lập tức.

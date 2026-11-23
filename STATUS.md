@@ -1,47 +1,54 @@
 # STATUS
 
 ## Đang làm
-- Đã soạn thảo xong đề xuất giao thức **PROTOCOL.md phiên bản v0.1** cho Bước 3 (Quái và NPC State Machine).
-- Dừng lại theo đúng quy tắc AGENTS.md (mục "Quy trình đổi giao thức": chỉ sửa PROTOCOL.md, mô tả đề xuất, KHÔNG viết code, rồi báo con người duyệt).
-- Chờ con người duyệt nội dung đề xuất `PROTOCOL.md` v0.1 trước khi cập nhật crate `protocol/` và viết code logic server/client.
+- Chờ Agent CLIENT triển khai hiển thị Quái vật và NPC trên client Godot 4 cho Bước 3.
+- Phía Server và Bot test tập trung 1 người chơi cho Bước 3 đã hoàn thành xuất sắc.
 
 ## Vừa xong
-- Client Godot 4 có màn hình kết nối mặc định `127.0.0.1:7777`, gửi `Join`, vào bản đồ khi nhận `Welcome` và quay lại màn hình kết nối khi mất phiên.
-- Client tạo danh sách nhân vật từ `PlayerJoined` / `PlayerLeft`, gắn camera theo nhân vật cục bộ và nội suy giữa hai `Snapshot` dựa trên `tick_rate`. WASD gửi hướng ngay khi đổi, kể cả khi nhả phím, và gửi lại sau ít nhất 100 ms khi giữ hướng. Vị trí lấy từ server.
-- Bản đồ v0 dùng kích thước hiển thị tạm **1024 × 1024 px, tile 32 px**, chờ PROTOCOL v0.1 vì `Welcome.map` hiện chỉ là tên bản đồ. Biên di chuyển vẫn do server quyết định.
-- Cách chạy: tại `D:\Deep-Night`, chạy `cargo run -p server`. Mở `client/project.godot` bằng Godot 4 và nhấn F5. Mở hai phiên với hai tên khác nhau để kiểm tra thấy nhau và di chuyển bằng WASD.
-- Kiểm tra với Godot 4.4.1 headless và server thật tại `ws://127.0.0.1:7777`: hai client nhận `Welcome`, thấy người vào trước và người mới, đồng bộ vị trí sau khi di chuyển và nhả phím, xóa nhân vật khi rời, báo mất kết nối khi dừng server. WebSocket thử nghiệm xác nhận JSON sai bị bỏ qua, `Error` được hiển thị và lý do đóng được giữ khi quay lại màn hình kết nối. Chưa kiểm tra giao diện bằng cửa sổ Godot.
-- `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` (10 test) và `cargo run -p bot` (`DURATION_SECS=3`) đều thành công.
 
-### Server Bước 1
-
-- Triển khai Server WebSocket (`tokio-tungstenite`) đọc cổng từ biến môi trường `PORT` (mặc định 7777), bind `0.0.0.0`.
-- Thiết kế kiến trúc Server Authoritative: tách riêng Network Task và Game Loop 20Hz qua channel `GameEvent`.
-- Xử lý kết nối và xác thực:
-  - Timeout 5 giây cho gói `Join`.
-  - Kiểm tra độ dài tên (1-20 ký tự), lọc ký tự điều khiển.
-  - Từ chối trùng tên đang online bằng gói `Error` ("Ten nguoi choi da ton tai").
-  - Gán `player_id`, gửi `Welcome`, gửi danh sách người chơi online cho người mới, và broadcast `PlayerJoined` cho người khác; broadcast `PlayerLeft` khi người chơi ngắt kết nối.
-- Game Loop 20Hz: gom `Input` mới nhất theo `seq`, tính toán vị trí theo `PLAYER_MOVE_SPEED` (200 px/s, chuẩn hóa khi đi chéo), kẹp trong biên map `[0.0, 1000.0]`, broadcast `Snapshot` mỗi tick.
-- Kiểm tra an toàn dữ liệu mạng (Zero-trust, không panic, không unwrap/expect):
-  - Kích thước frame tối đa 4096 bytes (gói lớn hơn bị từ chối bằng Error).
-  - Rate limit tối đa 30 Input/s và 60 packets/s chống spam DoS.
-  - Bỏ qua dữ liệu sai cú pháp JSON hoặc giá trị `dx, dy` ngoài `{-1, 0, 1}`.
-  - Tất cả các điểm kiểm tra input đều có chú thích `// AUTH:`.
-- Viết `bot/src/main.rs`: chạy đồng thời 3 bot di chuyển vòng quanh 30 giây (hơn 700 ticks), in log tọa độ; chạy kịch bản gửi gói rác (JSON lỗi, gói 5000 bytes, `dx=5`, trùng tên, gửi Input khi chưa Join) chứng minh server không sập.
-- Viết 5 integration tests tự động trong `server/tests/server_test.rs`.
+### Server Bước 3 (Quái & NPC State Machine - Tập trung 1 người chơi)
+- Hoàn thiện nâng cấp giao thức `PROTOCOL.md` lên **v0.1**: bổ sung `monsters` và `npcs` vào `Snapshot`, quy định các trạng thái FSM của quái vật (`Idle`, `Patrol`, `Chase`, `Attack`, `Return`, `Dead`) và NPC (`Idle`, `Patrol`, `Talk`).
+- Thêm dữ liệu nội dung game trong `data/monsters.json` (Goblin, Sói xám với tầm aggro, tầm đánh, bán kính leash, chu kỳ hồi sinh) và `data/npcs.json` (Trưởng làng Galahad idle và Lính canh tuần tra waypoint).
+- Triển khai State Machine cho Quái vật và NPC trong `server/src/entities.rs`:
+  - Quái vật: Tự động tuần tra quanh điểm spawn, phát hiện người chơi trong tầm `aggro_radius`, đuổi theo ở tốc độ `chase_speed`, chuyển sang `Attack` khi áp sát trong tầm `attack_range`. Nếu người chơi chạy xa vượt bán kính `leash_radius`, quái lập tức bỏ đuổi, kích hoạt trạng thái `Return` quay về điểm spawn, hồi đầy máu và quay lại `Idle`/`Patrol`. Khi quái chết (`Dead`), ẩn khỏi snapshot sau 3 giây despawn và tự động hồi sinh sau `respawn_time`.
+  - NPC: Tự động chuyển sang `Talk` khi người chơi ở cự ly gần (<= 50px), và quay trở lại trạng thái ban đầu (`Idle` hoặc `Patrol`) khi người chơi rời xa > 60px.
+- Tích hợp `EntityManager` vào Game Loop 20Hz trong `server/src/lib.rs`: thu thập snapshot của quái và NPC phát sóng tới tất cả client đang kết nối.
+- Hoàn thiện cơ chế gửi lý do đóng kết nối WebSocket Close frame: khi từ chối client hoặc gặp lỗi, server gửi gói `ServerMessage::Error` kèm khung WebSocket `Close` mang mã `Policy` (1008) và chuỗi lý do UTF-8, giúp client Godot 4.4.1 nhận được chính xác lý do từ chối.
+- Cập nhật `bot/src/main.rs`: Mặc định chạy kịch bản tập trung 1 người chơi (`Knight_Arthur`):
+  - Khởi đầu cạnh Trưởng làng Galahad, xác nhận NPC chuyển sang `Talk`.
+  - Di chuyển rời xa Trưởng làng, xác nhận NPC trở lại `Idle`.
+  - Tiến về bãi quái Goblin tại (300, 400), ghi nhận Goblin phát hiện người chơi và chuyển sang `Chase`, áp sát chuyển sang `Attack`.
+  - Tháo chạy về phía đông nam vượt tầm leash, ghi nhận Goblin bỏ đuổi và chuyển sang `Return` quay về điểm spawn rồi trở về `Idle`.
+  - Chạy tiếp 5 bài kiểm tra gói rác (fuzz tests): JSON lỗi, gói > 4096 bytes, `dx=5`, trùng tên người chơi đang online, gửi Input khi chưa Join. Toàn bộ test vượt qua, chứng minh server không sập.
+- Bổ sung 2 integration test tự động trong `server/tests/server_test.rs`:
+  - `test_single_player_monster_aggro_and_leash`: kiểm chứng FSM quái vật phản ứng với 1 người chơi (Aggro -> Chase -> Attack -> Leash Return -> Idle).
+  - `test_single_player_npc_interaction_proximity`: kiểm chứng FSM NPC chuyển đổi `Talk` và `Idle` theo khoảng cách người chơi.
+  - `test_duplicate_name_rejected`: kiểm chứng nhận được cả gói tin `Error` và khung WebSocket Close frame chứa đúng lý do lỗi.
 - Kết quả kiểm tra:
   - `cargo fmt --check`: PASSED.
-  - `cargo clippy --workspace -- -D warnings`: PASSED (0 warnings).
-  - `cargo test --workspace`: 10/10 tests passed (5 unit tests protocol, 5 integration tests server).
-  - `target/debug/bot.exe`: 3 bot chạy 30s thành công, toàn bộ fuzz tests vượt qua.
+  - `cargo clippy --workspace --tests -- -D warnings`: PASSED (0 warnings).
+  - `cargo test --workspace`: 12/12 tests passed (5 unit tests protocol, 7 integration tests server).
+  - Chạy thực tế `target/debug/server.exe` và `target/debug/bot.exe`: kịch bản 1 người chơi và bộ fuzz tests chạy mượt mà, đầy đủ log chuyển đổi trạng thái.
 
-## Yêu cầu cho agent kia
-- Agent SERVER: Đề xuất mở rộng `Snapshot` để server gửi danh sách đầy đủ quái và NPC hiện diện ở mỗi tick. Client cần ID ổn định, loại hoặc mã hiển thị, tọa độ và trạng thái cần hiển thị. Đề nghị đặc tả kiểu dữ liệu, giá trị trạng thái và quy tắc xuất hiện, biến mất trong `PROTOCOL.md` để người duyệt trước khi viết code. Sau khi được duyệt, server phụ trách dữ liệu và State Machine. Client dùng snapshot để tạo, cập nhật và gỡ đối tượng trên màn hình.
-- Agent SERVER: Khi từ chối tham gia hoặc đóng phiên do lỗi, hãy truyền lý do trong khung WebSocket Close cùng với gói `Error` hiện có để Godot vẫn hiện được chi tiết nếu cả hai khung đến trong cùng một lần poll.
+### Client Bước 1
+- Client Godot 4 có màn hình kết nối mặc định `127.0.0.1:7777`, gửi `Join`, vào bản đồ khi nhận `Welcome` và quay lại màn hình kết nối khi mất phiên.
+- Client tạo danh sách nhân vật từ `PlayerJoined` / `PlayerLeft`, gắn camera theo nhân vật cục bộ và nội suy giữa hai `Snapshot` dựa trên `tick_rate`. WASD gửi hướng ngay khi đổi, kể cả khi nhả phím, và gửi lại sau ít nhất 100 ms khi giữ hướng. Vị trí lấy từ server.
+
+## Yêu cầu cho agent kia (Agent CLIENT)
+- Phía Server đã hoàn tất toàn bộ logic State Machine cho Quái vật và NPC trong Bước 3.
+- Giao thức `Snapshot` đã có 2 trường `monsters: Vec<MonsterSnapshot>` và `npcs: Vec<NpcSnapshot>` (xem chi tiết trong `PROTOCOL.md` v0.1).
+- Người chơi mới xuất hiện tại `(500, 500)` ngay cạnh Trưởng làng Galahad tại `(520, 510)`. Ở khoảng cách này, Trưởng làng sẽ có `state: "Talk"`.
+- Bãi quái Goblin gần nhất ở `(300, 400)`. Khi người chơi tiếp cận (khoảng cách <= 180px), Goblin sẽ chuyển sang `state: "Chase"` và đuổi theo người chơi, sau đó chuyển sang `state: "Attack"` khi khoảng cách <= 35px.
+- Agent CLIENT chỉ cần:
+  1. Cập nhật giải mã gói `Snapshot` để lấy thêm danh sách `monsters` và `npcs`.
+  2. Tạo scene / node hiển thị NPC (hiển thị tên, trạng thái thoại/bong bóng chat khi `state == "Talk"`).
+  3. Tạo scene / node hiển thị Quái vật (thanh máu `hp / max_hp`, hoạt ảnh theo `state`: Idle/Patrol/Chase/Attack/Return/Dead).
+  4. Nội suy tọa độ `x, y` của quái và NPC mượt mà giữa các snapshot như đã làm với người chơi.
 
 ## Bẫy đã gặp
-- Godot 4.4.1 chỉ cho đọc hàng đợi nhận của `WebSocketPeer` khi còn ở `STATE_OPEN`. Với server thật, tên trùng bị từ chối nhưng client chỉ hiện “Máy chủ đã đóng kết nối trước khi vào bản đồ” vì khung Close không có lý do và gói `Error` đến ngay trước đó không đọc được.
+- Khi bot fuzz test kiểm tra trùng tên chạy độc lập (Fuzz 4), nếu gửi tên một bot không online thì server chấp nhận thay vì từ chối. Cần tạo 1 kết nối client thành công trước rồi cho client thứ 2 thử đăng ký cùng tên đó.
+- Godot 4.4.1 chỉ cho đọc hàng đợi nhận của `WebSocketPeer` khi còn ở `STATE_OPEN`. Server hiện đã gửi kèm khung WebSocket Close frame mã Policy (1008) kèm lý do dạng văn bản để client hiển thị đúng thông báo lỗi ngay cả khi socket đóng lập tức.
 - Bộ giải mã bỏ qua ID và tick vượt `2^53 - 1` vì kiểu số của JSON trong Godot có thể làm tròn và khiến hai ID khác nhau trùng nhau.
 - Máy Windows ban đầu thiếu link.exe (MSVC) và GCC. Khi dùng Rust `x86_64-pc-windows-gnu`, cần dùng MinGW phiên bản MSVCRT (thay vì UCRT) để khớp với runtime CRT mà `rustc` liên kết, tránh lỗi `STATUS_ACCESS_VIOLATION`.
 - `stream.next()` trong integration test nhận snapshot liên tục ở tần số 20Hz (mỗi 50ms), nên cần đọc có giới hạn số lần thay vì dùng vòng lặp timeout vô hạn.
+- Clippy cảnh báo `explicit_counter_loop` khi dùng biến `mut seq` ngoài vòng lặp; cảnh báo `unnecessary_map_or` khi có thể thay thế bằng `is_some_and` hoặc `is_none_or`.
