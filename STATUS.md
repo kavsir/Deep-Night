@@ -1,9 +1,18 @@
 # STATUS
 
 ## Đang làm
-- Sẵn sàng bàn giao phần Server của Bước 1 cho Agent CLIENT triển khai kết nối Godot 4.
+- Client và server đã qua kiểm tra kết nối cục bộ của Bước 1. Còn vướng hiển thị chi tiết lỗi trùng tên khi server đóng WebSocket ngay sau gói `Error`.
 
 ## Vừa xong
+- Client Godot 4 có màn hình kết nối mặc định `127.0.0.1:7777`, gửi `Join`, vào bản đồ khi nhận `Welcome` và quay lại màn hình kết nối khi mất phiên.
+- Client tạo danh sách nhân vật từ `PlayerJoined` / `PlayerLeft`, gắn camera theo nhân vật cục bộ và nội suy giữa hai `Snapshot` dựa trên `tick_rate`. WASD gửi hướng ngay khi đổi, kể cả khi nhả phím, và gửi lại sau ít nhất 100 ms khi giữ hướng. Vị trí lấy từ server.
+- Bản đồ v0 dùng kích thước hiển thị tạm **1024 × 1024 px, tile 32 px**, chờ PROTOCOL v0.1 vì `Welcome.map` hiện chỉ là tên bản đồ. Biên di chuyển vẫn do server quyết định.
+- Cách chạy: tại `D:\Deep-Night`, chạy `cargo run -p server`. Mở `client/project.godot` bằng Godot 4 và nhấn F5. Mở hai phiên với hai tên khác nhau để kiểm tra thấy nhau và di chuyển bằng WASD.
+- Kiểm tra với Godot 4.4.1 headless và server thật tại `ws://127.0.0.1:7777`: hai client nhận `Welcome`, thấy người vào trước và người mới, đồng bộ vị trí sau khi di chuyển và nhả phím, xóa nhân vật khi rời, báo mất kết nối khi dừng server. WebSocket thử nghiệm xác nhận JSON sai bị bỏ qua, `Error` được hiển thị và lý do đóng được giữ khi quay lại màn hình kết nối. Chưa kiểm tra giao diện bằng cửa sổ Godot.
+- `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` (10 test) và `cargo run -p bot` (`DURATION_SECS=3`) đều thành công.
+
+### Server Bước 1
+
 - Triển khai Server WebSocket (`tokio-tungstenite`) đọc cổng từ biến môi trường `PORT` (mặc định 7777), bind `0.0.0.0`.
 - Thiết kế kiến trúc Server Authoritative: tách riêng Network Task và Game Loop 20Hz qua channel `GameEvent`.
 - Xử lý kết nối và xác thực:
@@ -26,8 +35,10 @@
   - `target/debug/bot.exe`: 3 bot chạy 30s thành công, toàn bộ fuzz tests vượt qua.
 
 ## Yêu cầu cho agent kia
-- Agent CLIENT: Server Bước 1 đã sẵn sàng hoạt động tại `ws://<ip>:7777`. Client có thể kết nối WebSocket, gửi `Join { name }`, gửi `Input { seq, dx, dy }`, nhận `Welcome`, danh sách người chơi qua `PlayerJoined`, và hiển thị người chơi qua `Snapshot`.
+- Agent SERVER: Khi từ chối tham gia hoặc đóng phiên do lỗi, hãy truyền lý do trong khung WebSocket Close cùng với gói `Error` hiện có để Godot vẫn hiện được chi tiết nếu cả hai khung đến trong cùng một lần poll.
 
 ## Bẫy đã gặp
+- Godot 4.4.1 chỉ cho đọc hàng đợi nhận của `WebSocketPeer` khi còn ở `STATE_OPEN`. Với server thật, tên trùng bị từ chối nhưng client chỉ hiện “Máy chủ đã đóng kết nối trước khi vào bản đồ” vì khung Close không có lý do và gói `Error` đến ngay trước đó không đọc được.
+- Bộ giải mã bỏ qua ID và tick vượt `2^53 - 1` vì kiểu số của JSON trong Godot có thể làm tròn và khiến hai ID khác nhau trùng nhau.
 - Máy Windows ban đầu thiếu link.exe (MSVC) và GCC. Khi dùng Rust `x86_64-pc-windows-gnu`, cần dùng MinGW phiên bản MSVCRT (thay vì UCRT) để khớp với runtime CRT mà `rustc` liên kết, tránh lỗi `STATUS_ACCESS_VIOLATION`.
 - `stream.next()` trong integration test nhận snapshot liên tục ở tần số 20Hz (mỗi 50ms), nên cần đọc có giới hạn số lần thay vì dùng vòng lặp timeout vô hạn.
