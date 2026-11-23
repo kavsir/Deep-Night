@@ -1,0 +1,26 @@
+[
+  {
+    "id": "potion_hp",
+    "name": "Bình máu nhỏ",
+    "type": "consumable",
+    "heal_amount": 40,
+    "max_stack": 20,
+    "description": "Hồi phục 40 điểm sinh lực khi sử dụng."
+  },
+  {
+    "id": "goblin_ear",
+    "name": "Tai yêu tinh",
+    "type": "material",
+    "heal_amount": 0,
+    "max_stack": 99,
+    "description": "Chiến lợi phẩm từ yêu tinh, có thể bán hoặc dùng làm nhiệm vụ."
+  },
+  {
+    "id": "wolf_pelt",
+    "name": "Da sói xám",
+    "type": "material",
+    "heal_amount": 0,
+    "max_stack": 99,
+    "description": "Bộ da sói dày, có thể bán hoặc dùng chế tạo áo giáp."
+  }
+]

@@ -1,8 +1,10 @@
 use futures_util::{SinkExt, StreamExt};
 use protocol::{
-    ClientMessage, PlayerSnapshot, ServerMessage, MAP_MAX_X, MAP_MAX_Y, MAP_MIN_X, MAP_MIN_Y,
-    MAX_INPUTS_PER_SECOND, MAX_MESSAGE_SIZE, MAX_TOTAL_PACKETS_PER_SECOND, PLAYER_MOVE_SPEED,
-    SPAWN_X, SPAWN_Y, TICK_RATE,
+    ClientMessage, CombatEventSnapshot, InventorySlot, PlayerSnapshot, ServerMessage,
+    ITEM_USE_COOLDOWN, MAP_MAX_X, MAP_MAX_Y, MAP_MIN_X, MAP_MIN_Y, MAX_ATTACKS_PER_SECOND,
+    MAX_INPUTS_PER_SECOND, MAX_INVENTORY_SLOTS, MAX_MESSAGE_SIZE, MAX_TOTAL_PACKETS_PER_SECOND,
+    MAX_USE_ITEMS_PER_SECOND, PLAYER_ATTACK_COOLDOWN, PLAYER_ATTACK_RANGE, PLAYER_MOVE_SPEED,
+    RESPAWN_DELAY, SPAWN_X, SPAWN_Y, TICK_RATE,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -13,7 +15,9 @@ use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
 
 pub mod entities;
+pub mod items;
 use entities::EntityManager;
+use items::ItemRegistry;
 
 pub type JoinResponse = Result<(u64, Vec<(u64, String)>), String>;
 
@@ -30,9 +34,25 @@ pub enum GameEvent {
         dx: i8,
         dy: i8,
     },
+    Attack {
+        player_id: u64,
+        seq: u64,
+        target_id: u64,
+    },
+    UseItem {
+        player_id: u64,
+        slot: u32,
+    },
     Disconnect {
         player_id: u64,
     },
+}
+
+/// Một ô chứa đồ trong túi của người chơi
+#[derive(Debug, Clone)]
+pub struct InventorySlotEntry {
+    pub item_id: String,
+    pub count: u32,
 }
 
 /// Dữ liệu một người chơi được lưu trữ trong game loop
@@ -44,7 +64,140 @@ struct PlayerData {
     last_dx: i8,
     last_dy: i8,
     last_seq: u64,
+    // Thuộc tính chiến đấu & tiến trình (v0.2)
+    hp: i32,
+    max_hp: i32,
+    level: u32,
+    exp: u32,
+    max_exp: u32,
+    attack_power: i32,
+    defense: i32,
+    attack_cooldown: f32,
+    item_cooldown: f32,
+    respawn_timer: Option<f32>,
+    inventory: Vec<Option<InventorySlotEntry>>,
     out_tx: mpsc::UnboundedSender<ServerMessage>,
+}
+
+impl PlayerData {
+    pub fn new(id: u64, name: String, out_tx: mpsc::UnboundedSender<ServerMessage>) -> Self {
+        let mut inventory = vec![None; MAX_INVENTORY_SLOTS];
+        // Tặng sẵn 3 bình máu nhỏ cho người chơi mới
+        inventory[0] = Some(InventorySlotEntry {
+            item_id: "potion_hp".to_string(),
+            count: 3,
+        });
+
+        Self {
+            id,
+            name,
+            x: SPAWN_X,
+            y: SPAWN_Y,
+            last_dx: 0,
+            last_dy: 0,
+            last_seq: 0,
+            hp: 100,
+            max_hp: 100,
+            level: 1,
+            exp: 0,
+            max_exp: 100,
+            attack_power: 15,
+            defense: 2,
+            attack_cooldown: 0.0,
+            item_cooldown: 0.0,
+            respawn_timer: None,
+            inventory,
+            out_tx,
+        }
+    }
+
+    pub fn to_snapshot(&self) -> PlayerSnapshot {
+        PlayerSnapshot {
+            id: self.id,
+            x: self.x,
+            y: self.y,
+            hp: self.hp,
+            max_hp: self.max_hp,
+            level: self.level,
+        }
+    }
+
+    pub fn to_player_stats(&self) -> ServerMessage {
+        ServerMessage::PlayerStats {
+            level: self.level,
+            exp: self.exp,
+            max_exp: self.max_exp,
+            hp: self.hp,
+            max_hp: self.max_hp,
+            attack_power: self.attack_power,
+            defense: self.defense,
+        }
+    }
+
+    pub fn to_inventory_message(&self) -> ServerMessage {
+        let mut slots = Vec::new();
+        for (i, entry_opt) in self.inventory.iter().enumerate() {
+            if let Some(entry) = entry_opt {
+                slots.push(InventorySlot {
+                    slot: i as u32,
+                    item_id: entry.item_id.clone(),
+                    count: entry.count,
+                });
+            }
+        }
+        ServerMessage::Inventory { slots }
+    }
+
+    /// Thêm kinh nghiệm và kiểm tra thăng cấp
+    pub fn add_exp(&mut self, gained: u32) -> bool {
+        self.exp += gained;
+        let mut leveled_up = false;
+        while self.exp >= self.max_exp {
+            self.level += 1;
+            self.exp -= self.max_exp;
+            self.max_exp = self.level * 100;
+            self.max_hp += 20;
+            self.attack_power += 3;
+            self.hp = self.max_hp; // Hồi đầy máu khi lên cấp
+            leveled_up = true;
+        }
+        leveled_up
+    }
+
+    /// Thêm vật phẩm vào túi đồ (ưu tiên stack vào ô có sẵn, sau đó đưa vào ô trống đầu tiên)
+    pub fn add_item(&mut self, item_id: &str, mut count: u32, registry: &ItemRegistry) -> bool {
+        let max_stack = registry.get(item_id).map(|t| t.max_stack).unwrap_or(99);
+
+        // 1. Tìm các ô đã có cùng loại vật phẩm và chưa đầy stack
+        for slot in self.inventory.iter_mut().flatten() {
+            if slot.item_id == item_id && slot.count < max_stack {
+                let space = max_stack - slot.count;
+                let add_now = space.min(count);
+                slot.count += add_now;
+                count -= add_now;
+                if count == 0 {
+                    return true;
+                }
+            }
+        }
+
+        // 2. Tìm ô trống đầu tiên
+        for slot in self.inventory.iter_mut() {
+            if slot.is_none() {
+                let add_now = max_stack.min(count);
+                *slot = Some(InventorySlotEntry {
+                    item_id: item_id.to_string(),
+                    count: add_now,
+                });
+                count -= add_now;
+                if count == 0 {
+                    return true;
+                }
+            }
+        }
+
+        count == 0
+    }
 }
 
 /// Chạy game loop tại tần số 20Hz, hoàn toàn tách biệt với I/O mạng
@@ -53,6 +206,9 @@ pub async fn run_game_loop(mut event_rx: mpsc::UnboundedReceiver<GameEvent>) {
     let mut next_player_id: u64 = 1;
     let mut players: HashMap<u64, PlayerData> = HashMap::new();
     let mut entity_manager = EntityManager::load_from_data_or_defaults();
+    let item_registry = ItemRegistry::load_from_data_or_defaults();
+    let mut pending_combat_events: Vec<CombatEventSnapshot> = Vec::new();
+
     let tick_duration = Duration::from_millis(1000 / TICK_RATE as u64); // 50ms (20Hz)
     let mut interval = tokio::time::interval(tick_duration);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -61,15 +217,40 @@ pub async fn run_game_loop(mut event_rx: mpsc::UnboundedReceiver<GameEvent>) {
         tokio::select! {
             _ = interval.tick() => {
                 tick += 1;
+                let dt = 1.0 / (TICK_RATE as f32);
 
                 // 1. Gom tất cả sự kiện mạng đang chờ trong channel
                 while let Ok(event) = event_rx.try_recv() {
-                    handle_game_event(event, &mut next_player_id, &mut players);
+                    handle_game_event(
+                        event,
+                        &mut next_player_id,
+                        &mut players,
+                        &mut entity_manager,
+                        &item_registry,
+                        &mut pending_combat_events,
+                    );
                 }
 
-                // 2. Cập nhật vị trí của tất cả người chơi
-                let dt = 1.0 / (TICK_RATE as f32);
+                // 2. Cập nhật vị trí & cooldown của tất cả người chơi
                 for player in players.values_mut() {
+                    player.attack_cooldown = (player.attack_cooldown - dt).max(0.0);
+                    player.item_cooldown = (player.item_cooldown - dt).max(0.0);
+
+                    // Xử lý tử vong và hồi sinh
+                    if let Some(ref mut timer) = player.respawn_timer {
+                        *timer -= dt;
+                        if *timer <= 0.0 {
+                            player.respawn_timer = None;
+                            player.hp = player.max_hp;
+                            player.x = SPAWN_X;
+                            player.y = SPAWN_Y;
+                            player.last_dx = 0;
+                            player.last_dy = 0;
+                            let _ = player.out_tx.send(player.to_player_stats());
+                        }
+                        continue; // Người chơi đang chết không thể di chuyển
+                    }
+
                     let dx = player.last_dx;
                     let dy = player.last_dy;
                     if dx != 0 || dy != 0 {
@@ -90,29 +271,57 @@ pub async fn run_game_loop(mut event_rx: mpsc::UnboundedReceiver<GameEvent>) {
                 }
 
                 // 3. Cập nhật State Machine cho quái vật và NPC
+                // Chỉ truyền tọa độ của những người chơi còn sống
                 let player_positions: Vec<(u64, f32, f32)> = players
                     .values()
+                    .filter(|p| p.hp > 0 && p.respawn_timer.is_none())
                     .map(|p| (p.id, p.x, p.y))
                     .collect();
-                entity_manager.tick(dt, &player_positions);
+
+                let monster_attacks = entity_manager.tick(dt, &player_positions);
+
+                // Xử lý quái vật tấn công người chơi
+                for atk in monster_attacks {
+                    if let Some(player) = players.get_mut(&atk.target_player_id) {
+                        if player.hp > 0 && player.respawn_timer.is_none() {
+                            let damage = (atk.attack_power - player.defense).max(1);
+                            player.hp = (player.hp - damage).max(0);
+
+                            pending_combat_events.push(CombatEventSnapshot {
+                                attacker_id: atk.monster_id,
+                                target_id: player.id,
+                                damage,
+                                is_crit: false,
+                                target_hp: player.hp,
+                            });
+
+                            let _ = player.out_tx.send(player.to_player_stats());
+
+                            if player.hp == 0 {
+                                player.respawn_timer = Some(RESPAWN_DELAY);
+                                player.last_dx = 0;
+                                player.last_dy = 0;
+                            }
+                        }
+                    }
+                }
 
                 // 4. Tạo Snapshot và broadcast tới tất cả client đang kết nối
                 let snapshot_players: Vec<PlayerSnapshot> = players
                     .values()
-                    .map(|p| PlayerSnapshot {
-                        id: p.id,
-                        x: p.x,
-                        y: p.y,
-                    })
+                    .map(|p| p.to_snapshot())
                     .collect();
 
                 let (snapshot_monsters, snapshot_npcs) = entity_manager.get_snapshots();
+
+                let combat_events_this_tick = std::mem::take(&mut pending_combat_events);
 
                 let snapshot = ServerMessage::Snapshot {
                     tick,
                     players: snapshot_players,
                     monsters: snapshot_monsters,
                     npcs: snapshot_npcs,
+                    combat_events: combat_events_this_tick,
                 };
 
                 let mut disconnected_ids = Vec::new();
@@ -134,7 +343,14 @@ pub async fn run_game_loop(mut event_rx: mpsc::UnboundedReceiver<GameEvent>) {
                 }
             }
             Some(event) = event_rx.recv() => {
-                handle_game_event(event, &mut next_player_id, &mut players);
+                handle_game_event(
+                    event,
+                    &mut next_player_id,
+                    &mut players,
+                    &mut entity_manager,
+                    &item_registry,
+                    &mut pending_combat_events,
+                );
             }
             else => {
                 tracing::info!("Game event channel da dong, dung game loop");
@@ -149,6 +365,9 @@ fn handle_game_event(
     event: GameEvent,
     next_player_id: &mut u64,
     players: &mut HashMap<u64, PlayerData>,
+    entity_manager: &mut EntityManager,
+    item_registry: &ItemRegistry,
+    pending_combat_events: &mut Vec<CombatEventSnapshot>,
 ) {
     match event {
         GameEvent::Connect {
@@ -179,20 +398,9 @@ fn handle_game_event(
                 let _ = p.out_tx.send(joined_msg.clone());
             }
 
-            // Lưu người chơi mới vào trạng thái server
-            players.insert(
-                player_id,
-                PlayerData {
-                    id: player_id,
-                    name: name.clone(),
-                    x: SPAWN_X,
-                    y: SPAWN_Y,
-                    last_dx: 0,
-                    last_dy: 0,
-                    last_seq: 0,
-                    out_tx,
-                },
-            );
+            // Tạo người chơi mới
+            let new_player = PlayerData::new(player_id, name.clone(), out_tx.clone());
+            players.insert(player_id, new_player);
 
             tracing::info!("Nguoi choi '{}' da tham gia voi id: {}", name, player_id);
             let _ = resp_tx.send(Ok((player_id, online_list)));
@@ -205,10 +413,112 @@ fn handle_game_event(
         } => {
             if let Some(player) = players.get_mut(&player_id) {
                 // AUTH: Kiem tra seq moi nhat, bo qua input cu hon da xu ly
-                if seq >= player.last_seq {
+                // Khong cho di chuyen khi dang cho hoi sinh
+                if seq >= player.last_seq && player.respawn_timer.is_none() {
                     player.last_seq = seq;
                     player.last_dx = dx;
                     player.last_dy = dy;
+                }
+            }
+        }
+        GameEvent::Attack {
+            player_id,
+            target_id,
+            ..
+        } => {
+            if let Some(player) = players.get_mut(&player_id) {
+                // AUTH: Nguoi choi phai con song va het thoi gian hoi chieu danh
+                if player.hp <= 0 || player.respawn_timer.is_some() || player.attack_cooldown > 0.0
+                {
+                    return;
+                }
+
+                // AUTH: Tim muc tieu quai vat
+                let monster_opt = entity_manager
+                    .monsters
+                    .iter_mut()
+                    .find(|m| m.id == target_id);
+
+                if let Some(monster) = monster_opt {
+                    // AUTH: Quai vat phai con song
+                    if monster.hp <= 0 {
+                        return;
+                    }
+
+                    // AUTH: Khoang cach tan cong phai <= PLAYER_ATTACK_RANGE
+                    let dist = (monster.x - player.x).hypot(monster.y - player.y);
+                    if dist > PLAYER_ATTACK_RANGE {
+                        return;
+                    }
+
+                    // Thoa man dieu kien tan cong: dat cooldown
+                    player.attack_cooldown = PLAYER_ATTACK_COOLDOWN;
+
+                    // Tinh toan sat thuong: damage = max(1, player_atk - monster_def)
+                    let damage = (player.attack_power - monster.defense).max(1);
+                    let killed = monster.apply_damage(player.id, damage);
+
+                    pending_combat_events.push(CombatEventSnapshot {
+                        attacker_id: player.id,
+                        target_id: monster.id,
+                        damage,
+                        is_crit: false,
+                        target_hp: monster.hp,
+                    });
+
+                    if killed {
+                        // Nhan kinh nghiem va kiem tra thang cap
+                        let leveled_up = player.add_exp(monster.exp_reward);
+
+                        // Roi vat pham theo ty le
+                        let drops = monster.roll_drops();
+                        let mut inventory_changed = false;
+                        for (item_id, count) in drops {
+                            if player.add_item(&item_id, count, item_registry) {
+                                inventory_changed = true;
+                            }
+                        }
+
+                        if inventory_changed {
+                            let _ = player.out_tx.send(player.to_inventory_message());
+                        }
+
+                        if leveled_up || monster.exp_reward > 0 {
+                            let _ = player.out_tx.send(player.to_player_stats());
+                        }
+                    }
+                }
+            }
+        }
+        GameEvent::UseItem { player_id, slot } => {
+            if let Some(player) = players.get_mut(&player_id) {
+                // AUTH: Nguoi choi phai con song va het cooldown dung vat pham
+                if player.hp <= 0 || player.respawn_timer.is_some() || player.item_cooldown > 0.0 {
+                    return;
+                }
+
+                let slot_idx = slot as usize;
+                // AUTH: Slot phai hop le trong pham vi [0, MAX_INVENTORY_SLOTS - 1]
+                if slot_idx >= MAX_INVENTORY_SLOTS {
+                    return;
+                }
+
+                if let Some(ref mut entry) = player.inventory[slot_idx] {
+                    if let Some(tmpl) = item_registry.get(&entry.item_id) {
+                        if tmpl.item_type == "consumable" && tmpl.heal_amount > 0 {
+                            player.item_cooldown = ITEM_USE_COOLDOWN;
+                            player.hp = (player.hp + tmpl.heal_amount).min(player.max_hp);
+
+                            entry.count -= 1;
+                            let empty = entry.count == 0;
+                            if empty {
+                                player.inventory[slot_idx] = None;
+                            }
+
+                            let _ = player.out_tx.send(player.to_inventory_message());
+                            let _ = player.out_tx.send(player.to_player_stats());
+                        }
+                    }
                 }
             }
         }
@@ -352,10 +662,10 @@ pub async fn handle_connection(
             }
             trimmed.to_string()
         }
-        ClientMessage::Input { .. } => {
-            // AUTH: Client gui Input khi chua Join
+        _ => {
+            // AUTH: Client gui goi khac khi chua Join
             let _ = out_tx.send(ServerMessage::Error {
-                message: "Phai Join truoc khi gui Input".to_string(),
+                message: "Phai Join truoc khi gui goi tin khac".to_string(),
             });
             drop(out_tx);
             let _ = writer_task.await;
@@ -403,9 +713,29 @@ pub async fn handle_connection(
         });
     }
 
+    // Gửi PlayerStats và Inventory ban đầu
+    let _ = out_tx.send(ServerMessage::PlayerStats {
+        level: 1,
+        exp: 0,
+        max_exp: 100,
+        hp: 100,
+        max_hp: 100,
+        attack_power: 15,
+        defense: 2,
+    });
+    let _ = out_tx.send(ServerMessage::Inventory {
+        slots: vec![InventorySlot {
+            slot: 0,
+            item_id: "potion_hp".to_string(),
+            count: 3,
+        }],
+    });
+
     // 2. Vòng lặp nhận gói tin sau khi đã Join thành công
     let mut window_start = Instant::now();
     let mut input_count: u32 = 0;
+    let mut attack_count: u32 = 0;
+    let mut use_item_count: u32 = 0;
     let mut total_count: u32 = 0;
 
     while let Some(msg_result) = ws_reader.next().await {
@@ -435,6 +765,8 @@ pub async fn handle_connection(
         if now.duration_since(window_start) >= Duration::from_secs(1) {
             window_start = now;
             input_count = 0;
+            attack_count = 0;
+            use_item_count = 0;
             total_count = 0;
         }
         total_count += 1;
@@ -461,12 +793,10 @@ pub async fn handle_connection(
                 input_count += 1;
                 // AUTH: Kiem tra rate limit toi da 30 Input/giay
                 if input_count > MAX_INPUTS_PER_SECOND {
-                    // Drop goi tin thua trong giay nay de tranh flood
                     continue;
                 }
                 // AUTH: Kiem tra huong di chuyen dx, dy phai thuoc tap {-1, 0, 1}
                 if !(-1..=1).contains(&dx) || !(-1..=1).contains(&dy) {
-                    // Drop input bat thuong (dx=5, dy=-2...), server khong cap nhat
                     continue;
                 }
                 let _ = game_tx.send(GameEvent::Input {
@@ -475,6 +805,34 @@ pub async fn handle_connection(
                     dx,
                     dy,
                 });
+            }
+            ClientMessage::Attack { seq, target_id } => {
+                attack_count += 1;
+                // AUTH: Kiem tra rate limit toi da 5 Attack/giay
+                if attack_count > MAX_ATTACKS_PER_SECOND {
+                    continue;
+                }
+                // AUTH: target_id phai hop le > 0
+                if target_id == 0 {
+                    continue;
+                }
+                let _ = game_tx.send(GameEvent::Attack {
+                    player_id,
+                    seq,
+                    target_id,
+                });
+            }
+            ClientMessage::UseItem { slot } => {
+                use_item_count += 1;
+                // AUTH: Kiem tra rate limit toi da 3 UseItem/giay
+                if use_item_count > MAX_USE_ITEMS_PER_SECOND {
+                    continue;
+                }
+                // AUTH: slot phai nam trong pham vi [0, MAX_INVENTORY_SLOTS - 1]
+                if (slot as usize) >= MAX_INVENTORY_SLOTS {
+                    continue;
+                }
+                let _ = game_tx.send(GameEvent::UseItem { player_id, slot });
             }
             ClientMessage::Join { .. } => {
                 // AUTH: Client da Join thanh cong khong duoc phep Join lai, bo qua

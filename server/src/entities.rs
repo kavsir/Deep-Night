@@ -11,12 +11,29 @@ pub struct SpawnPointConfig {
     pub patrol_radius: f32,
 }
 
+/// Cấu hình tỷ lệ rơi vật phẩm của quái
+#[derive(Debug, Clone, Deserialize)]
+pub struct MonsterDropConfig {
+    pub item_id: String,
+    pub chance: f32,
+    pub min: u32,
+    pub max: u32,
+}
+
 /// Dữ liệu mẫu loại quái từ data/monsters.json
 #[derive(Debug, Clone, Deserialize)]
 pub struct MonsterTemplate {
     pub type_id: String,
     pub name: String,
     pub max_hp: i32,
+    #[serde(default = "default_attack_power")]
+    pub attack_power: i32,
+    #[serde(default = "default_defense")]
+    pub defense: i32,
+    #[serde(default = "default_exp_reward")]
+    pub exp_reward: u32,
+    #[serde(default)]
+    pub drops: Vec<MonsterDropConfig>,
     pub move_speed: f32,
     pub chase_speed: f32,
     pub aggro_radius: f32,
@@ -24,6 +41,16 @@ pub struct MonsterTemplate {
     pub leash_radius: f32,
     pub respawn_time: f32,
     pub spawns: Vec<SpawnPointConfig>,
+}
+
+fn default_attack_power() -> i32 {
+    8
+}
+fn default_defense() -> i32 {
+    2
+}
+fn default_exp_reward() -> u32 {
+    25
 }
 
 /// Dữ liệu waypoint của NPC
@@ -86,6 +113,14 @@ impl MonsterFsmState {
     }
 }
 
+/// Sự kiện quái vật tấn công người chơi
+#[derive(Debug, Clone)]
+pub struct MonsterAttackEvent {
+    pub monster_id: u64,
+    pub target_player_id: u64,
+    pub attack_power: i32,
+}
+
 /// Thực thể quái vật hoạt động trong thế giới game
 #[derive(Debug, Clone)]
 pub struct MonsterInstance {
@@ -98,6 +133,10 @@ pub struct MonsterInstance {
     pub patrol_radius: f32,
     pub max_hp: i32,
     pub hp: i32,
+    pub attack_power: i32,
+    pub defense: i32,
+    pub exp_reward: u32,
+    pub drops: Vec<MonsterDropConfig>,
     pub move_speed: f32,
     pub chase_speed: f32,
     pub aggro_radius: f32,
@@ -105,7 +144,9 @@ pub struct MonsterInstance {
     pub leash_radius: f32,
     pub respawn_time: f32,
     pub state: MonsterFsmState,
+    pub last_attacker_id: Option<u64>,
     patrol_step: u32,
+    rng_state: u64,
 }
 
 impl MonsterInstance {
@@ -120,6 +161,10 @@ impl MonsterInstance {
             patrol_radius: spawn.patrol_radius,
             max_hp: tmpl.max_hp,
             hp: tmpl.max_hp,
+            attack_power: tmpl.attack_power,
+            defense: tmpl.defense,
+            exp_reward: tmpl.exp_reward,
+            drops: tmpl.drops.clone(),
             move_speed: tmpl.move_speed,
             chase_speed: tmpl.chase_speed,
             aggro_radius: tmpl.aggro_radius,
@@ -127,12 +172,74 @@ impl MonsterInstance {
             leash_radius: tmpl.leash_radius,
             respawn_time: tmpl.respawn_time,
             state: MonsterFsmState::Idle { timer: 2.0 },
+            last_attacker_id: None,
             patrol_step: 0,
+            rng_state: id.wrapping_mul(6364136223846793005).wrapping_add(1),
         }
     }
 
-    /// Cập nhật State Machine tại mỗi tick (dt = 0.05s)
-    pub fn tick(&mut self, dt: f32, player_positions: &[(u64, f32, f32)]) {
+    /// Nhận sát thương từ người chơi. Trả về true nếu quái vật bị hạ gục (tử vong)
+    pub fn apply_damage(&mut self, attacker_id: u64, damage: i32) -> bool {
+        if matches!(self.state, MonsterFsmState::Dead { .. }) {
+            return false;
+        }
+
+        self.last_attacker_id = Some(attacker_id);
+        self.hp = (self.hp - damage).max(0);
+
+        if self.hp <= 0 {
+            self.state = MonsterFsmState::Dead {
+                respawn_timer: self.respawn_time,
+                despawn_delay: 3.0,
+            };
+            true
+        } else {
+            // Khi bị tấn công, quái lập tức chuyển sang nhắm vào người chơi này
+            match self.state {
+                MonsterFsmState::Idle { .. } | MonsterFsmState::Patrol { .. } => {
+                    self.state = MonsterFsmState::Chase {
+                        target_id: attacker_id,
+                    };
+                }
+                _ => {}
+            }
+            false
+        }
+    }
+
+    /// Đổ xúc xắc nhặt đồ rơi khi quái chết
+    pub fn roll_drops(&mut self) -> Vec<(String, u32)> {
+        let mut loot = Vec::new();
+        for drop in &self.drops {
+            // LCG pseudo-random [0.0, 1.0)
+            self.rng_state = self
+                .rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
+            let roll = ((self.rng_state >> 32) as u32 as f32) / 4294967296.0;
+
+            if roll <= drop.chance {
+                let count = if drop.max > drop.min {
+                    drop.min + ((self.rng_state >> 16) as u32 % (drop.max - drop.min + 1))
+                } else {
+                    drop.min
+                };
+                if count > 0 {
+                    loot.push((drop.item_id.clone(), count));
+                }
+            }
+        }
+        loot
+    }
+
+    /// Cập nhật State Machine tại mỗi tick (dt = 0.05s). Trả về sự kiện tấn công nếu có
+    pub fn tick(
+        &mut self,
+        dt: f32,
+        player_positions: &[(u64, f32, f32)],
+    ) -> Option<MonsterAttackEvent> {
+        let mut attack_event = None;
+
         // Tìm người chơi gần nhất trong danh sách
         let nearest_player = player_positions.iter().min_by(|(_, ax, ay), (_, bx, by)| {
             let da = (ax - self.x).hypot(ay - self.y);
@@ -149,7 +256,7 @@ impl MonsterInstance {
                     let dist = (px - self.x).hypot(py - self.y);
                     if dist <= self.aggro_radius {
                         self.state = MonsterFsmState::Chase { target_id: p_id };
-                        return;
+                        return None;
                     }
                 }
 
@@ -174,7 +281,7 @@ impl MonsterInstance {
                     let dist = (px - self.x).hypot(py - self.y);
                     if dist <= self.aggro_radius {
                         self.state = MonsterFsmState::Chase { target_id: p_id };
-                        return;
+                        return None;
                     }
                 }
 
@@ -204,16 +311,16 @@ impl MonsterInstance {
                     // Nếu chạy quá xa điểm spawn ban đầu -> bỏ đuổi, quay về
                     if dist_from_spawn > self.leash_radius {
                         self.state = MonsterFsmState::Return;
-                        return;
+                        return None;
                     }
 
                     // Nếu áp sát mục tiêu -> chuyển sang Attack
                     if dist_to_target <= self.attack_range {
                         self.state = MonsterFsmState::Attack {
                             target_id: tid,
-                            timer: 1.0,
+                            timer: 0.0, // Đánh ngay đòn đầu khi áp sát
                         };
-                        return;
+                        return None;
                     }
 
                     // Di chuyển áp sát người chơi
@@ -243,6 +350,11 @@ impl MonsterInstance {
                         } else if dist <= self.attack_range {
                             // Đánh tiếp sau 1 giây
                             *timer = 1.0;
+                            attack_event = Some(MonsterAttackEvent {
+                                monster_id: self.id,
+                                target_player_id: tid,
+                                attack_power: self.attack_power,
+                            });
                         } else {
                             // Người chơi lùi lại, tiếp tục đuổi
                             self.state = MonsterFsmState::Chase { target_id: tid };
@@ -286,6 +398,8 @@ impl MonsterInstance {
                 }
             }
         }
+
+        attack_event
     }
 
     /// Xuất dữ liệu snapshot (trả về None nếu quái đã chết và qua thời gian despawn 3s)
@@ -477,14 +591,22 @@ impl EntityManager {
         Self { monsters, npcs }
     }
 
-    /// Cập nhật logic FSM cho tất cả quái và NPC
-    pub fn tick(&mut self, dt: f32, player_positions: &[(u64, f32, f32)]) {
+    /// Cập nhật logic FSM cho tất cả quái và NPC, thu thập các sự kiện quái tấn công người chơi
+    pub fn tick(
+        &mut self,
+        dt: f32,
+        player_positions: &[(u64, f32, f32)],
+    ) -> Vec<MonsterAttackEvent> {
+        let mut attack_events = Vec::new();
         for m in &mut self.monsters {
-            m.tick(dt, player_positions);
+            if let Some(event) = m.tick(dt, player_positions) {
+                attack_events.push(event);
+            }
         }
         for n in &mut self.npcs {
             n.tick(dt, player_positions);
         }
+        attack_events
     }
 
     /// Thu thập snapshot quái và NPC
@@ -504,6 +626,23 @@ impl EntityManager {
                 type_id: "goblin".to_string(),
                 name: "Yêu tinh".to_string(),
                 max_hp: 50,
+                attack_power: 8,
+                defense: 2,
+                exp_reward: 25,
+                drops: vec![
+                    MonsterDropConfig {
+                        item_id: "potion_hp".to_string(),
+                        chance: 0.6,
+                        min: 1,
+                        max: 1,
+                    },
+                    MonsterDropConfig {
+                        item_id: "goblin_ear".to_string(),
+                        chance: 0.8,
+                        min: 1,
+                        max: 1,
+                    },
+                ],
                 move_speed: 100.0,
                 chase_speed: 150.0,
                 aggro_radius: 180.0,
@@ -527,6 +666,23 @@ impl EntityManager {
                 type_id: "wolf".to_string(),
                 name: "Sói xám".to_string(),
                 max_hp: 80,
+                attack_power: 14,
+                defense: 4,
+                exp_reward: 50,
+                drops: vec![
+                    MonsterDropConfig {
+                        item_id: "potion_hp".to_string(),
+                        chance: 0.5,
+                        min: 1,
+                        max: 1,
+                    },
+                    MonsterDropConfig {
+                        item_id: "wolf_pelt".to_string(),
+                        chance: 0.9,
+                        min: 1,
+                        max: 1,
+                    },
+                ],
                 move_speed: 120.0,
                 chase_speed: 180.0,
                 aggro_radius: 220.0,

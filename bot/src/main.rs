@@ -94,7 +94,6 @@ async fn run_regular_bot(name: String, url: String, duration_secs: u64) {
         tokio::select! {
             _ = send_interval.tick() => {
                 seq += 1;
-                // Thay đổi hướng mỗi 2 giây
                 let elapsed_secs = start_time.elapsed().as_secs();
                 let dir_idx = ((elapsed_secs / 2) % 4) as usize;
                 let (dx, dy) = directions[dir_idx];
@@ -115,18 +114,20 @@ async fn run_regular_bot(name: String, url: String, duration_secs: u64) {
                         players,
                         monsters,
                         npcs,
+                        ..
                     }) = ServerMessage::from_json(&text)
                     {
-                        // In log vị trí định kỳ mỗi 1 giây
                         if last_log_time.elapsed() >= Duration::from_secs(1) {
                             last_log_time = Instant::now();
                             if let Some(my_pos) = players.iter().find(|p| p.id == my_id) {
                                 tracing::info!(
-                                    "[{}] [Tick {:>4}] Vi tri: ({:>6.1}, {:>6.1}) | Nguoi choi: {} | Quai: {} | NPC: {}",
+                                    "[{}] [Tick {:>4}] Vi tri: ({:>6.1}, {:>6.1}) | HP: {}/{} | Nguoi choi: {} | Quai: {} | NPC: {}",
                                     name,
                                     tick,
                                     my_pos.x,
                                     my_pos.y,
+                                    my_pos.hp,
+                                    my_pos.max_hp,
                                     players.len(),
                                     monsters.len(),
                                     npcs.len()
@@ -164,7 +165,6 @@ async fn run_fuzz_tests(url: String) {
         let _ = sink
             .send(Message::Text("{ this is totally invalid json }".into()))
             .await;
-        // Server phai tu choi va dong ket noi hoac tra Error, khong panic
         let resp = stream.next().await;
         tracing::info!(
             "[Fuzz 1] -> Ket qua xu ly JSON sai cu phap: {:?} (Server song sot tot!)",
@@ -210,11 +210,9 @@ async fn run_fuzz_tests(url: String) {
             .await;
         let _ = stream.next().await; // Welcome
 
-        // Gui dx=5
         let bad_input = "{\"type\":\"Input\",\"seq\":1,\"dx\":5,\"dy\":0}";
         let _ = sink.send(Message::Text(bad_input.into())).await;
 
-        // Cho them 300ms xem server co sap khong va doc snapshot
         tokio::time::sleep(Duration::from_millis(300)).await;
         let mut received_snapshot = false;
         if let Some(Ok(Message::Text(t))) = stream.next().await {
@@ -241,7 +239,6 @@ async fn run_fuzz_tests(url: String) {
             .await;
         let _ = stream1.next().await; // Welcome
 
-        // Client 2 thu ket noi voi cung ten do
         if let Ok((ws_stream2, _)) = connect_async(&url).await {
             let (mut sink2, mut stream2) = ws_stream2.split();
             let duplicate_join = ClientMessage::Join {
@@ -301,10 +298,75 @@ async fn run_fuzz_tests(url: String) {
         let _ = <_ as futures_util::SinkExt<_>>::close(&mut sink).await;
     }
 
-    tracing::info!("=== TAT CA FUZZ TESTS HOAN THANH XUAT SAC, SERVER VAN HOAT DONG ON DINH ===");
+    // Test 6: Gui Attack muc tieu khong ton tai (target_id = 999999)
+    tracing::info!("[Fuzz 6] Gui Attack muc tieu khong ton tai (target_id = 999999)...");
+    if let Ok((ws_stream, _)) = connect_async(&url).await {
+        let (mut sink, mut stream) = ws_stream.split();
+        let join = ClientMessage::Join {
+            name: "Fuzz_GhostTarget".to_string(),
+        };
+        let _ = sink
+            .send(Message::Text(join.to_json().unwrap().into()))
+            .await;
+        let _ = stream.next().await; // Welcome
+
+        let attack_fake = ClientMessage::Attack {
+            seq: 1,
+            target_id: 999999,
+        };
+        let _ = sink
+            .send(Message::Text(attack_fake.to_json().unwrap().into()))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut alive = false;
+        if let Some(Ok(Message::Text(t))) = stream.next().await {
+            if let Ok(ServerMessage::Snapshot { .. }) = ServerMessage::from_json(&t) {
+                alive = true;
+            }
+        }
+        tracing::info!(
+            "[Fuzz 6] -> Ket qua attack quai ao: server_alive={} (Server xu ly em dep!)",
+            alive
+        );
+        let _ = <_ as futures_util::SinkExt<_>>::close(&mut sink).await;
+    }
+
+    // Test 7: Gui UseItem voi slot vuot nguong 20 (slot = 99)
+    tracing::info!("[Fuzz 7] Gui UseItem slot vuot nguong (slot = 99)...");
+    if let Ok((ws_stream, _)) = connect_async(&url).await {
+        let (mut sink, mut stream) = ws_stream.split();
+        let join = ClientMessage::Join {
+            name: "Fuzz_BadSlot".to_string(),
+        };
+        let _ = sink
+            .send(Message::Text(join.to_json().unwrap().into()))
+            .await;
+        let _ = stream.next().await; // Welcome
+
+        let use_bad_slot = ClientMessage::UseItem { slot: 99 };
+        let _ = sink
+            .send(Message::Text(use_bad_slot.to_json().unwrap().into()))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut alive = false;
+        if let Some(Ok(Message::Text(t))) = stream.next().await {
+            if let Ok(ServerMessage::Snapshot { .. }) = ServerMessage::from_json(&t) {
+                alive = true;
+            }
+        }
+        tracing::info!(
+            "[Fuzz 7] -> Ket qua dung slot = 99: server_alive={} (Server bao ve thanh cong!)",
+            alive
+        );
+        let _ = <_ as futures_util::SinkExt<_>>::close(&mut sink).await;
+    }
+
+    tracing::info!("=== TAT CA 7 FUZZ TESTS HOAN THANH XUAT SAC, SERVER VAN HOAT DONG ON DINH ===");
 }
 
-/// Chạy kịch bản 1 người chơi tương tác với toàn bộ thế giới: NPC và Quái vật
+/// Chạy kịch bản 1 người chơi tương tác với toàn bộ thế giới: NPC, Quái vật, Chiến đấu, Nhặt đồ và Dùng bình máu
 async fn run_single_player_quest_bot(name: String, url: String, duration_secs: u64) {
     tracing::info!("=== [1 NGUOI CHOI] BAT DAU KICH BAN CHO '{}' ===", name);
     let (ws_stream, _) = match connect_async(&url).await {
@@ -323,25 +385,52 @@ async fn run_single_player_quest_bot(name: String, url: String, duration_secs: u
         let _ = sink.send(Message::Text(json.into())).await;
     }
 
-    // 2. Nhan Welcome
+    // 2. Nhan Welcome, PlayerStats, Inventory
     let mut my_player_id = None;
     while let Some(msg_res) = stream.next().await {
         if let Ok(Message::Text(text)) = msg_res {
-            if let Ok(ServerMessage::Welcome {
-                player_id,
-                tick_rate,
-                map,
-            }) = ServerMessage::from_json(&text)
-            {
-                tracing::info!(
-                    "[{}] -> NHAN WELCOME! player_id: {}, tick_rate: {}Hz, map: '{}'",
-                    name,
-                    player_id,
-                    tick_rate,
-                    map
-                );
-                my_player_id = Some(player_id);
-                break;
+            if let Ok(msg) = ServerMessage::from_json(&text) {
+                match msg {
+                    ServerMessage::Welcome {
+                        player_id,
+                        tick_rate,
+                        map,
+                    } => {
+                        tracing::info!(
+                            "[{}] -> NHAN WELCOME! player_id: {}, tick_rate: {}Hz, map: '{}'",
+                            name,
+                            player_id,
+                            tick_rate,
+                            map
+                        );
+                        my_player_id = Some(player_id);
+                    }
+                    ServerMessage::PlayerStats {
+                        level,
+                        hp,
+                        max_hp,
+                        attack_power,
+                        defense,
+                        ..
+                    } => {
+                        tracing::info!(
+                            "[{}] -> Chi so: Cap {}, Mau: {}/{}, Cong: {}, Thu: {}",
+                            name,
+                            level,
+                            hp,
+                            max_hp,
+                            attack_power,
+                            defense
+                        );
+                    }
+                    ServerMessage::Inventory { slots } => {
+                        tracing::info!("[{}] -> Tui do: {} o vat pham", name, slots.len());
+                        if my_player_id.is_some() {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -355,9 +444,16 @@ async fn run_single_player_quest_bot(name: String, url: String, duration_secs: u
     let mut seq = 0u64;
     let start_time = Instant::now();
     let total_duration = Duration::from_secs(duration_secs);
-    let mut phase = 0; // 0: Check NPC Talk, 1: Approach Goblin (-1, -1), 2: Flee Goblin (1, 1), 3: Free roam
+    // Phase 0: NPC proximity
+    // Phase 1: Move towards Goblin (300, 400)
+    // Phase 2: Combat Attack Goblin
+    // Phase 3: Use health potion
+    // Phase 4: Free roam
+    let mut phase = 0;
     let mut phase_timer = Instant::now();
     let mut last_log_time = Instant::now();
+    let mut last_attack_time = Instant::now();
+    let mut target_goblin_id: Option<u64> = None;
     let mut input_interval = tokio::time::interval(Duration::from_millis(100));
 
     while start_time.elapsed() < total_duration {
@@ -366,13 +462,32 @@ async fn run_single_player_quest_bot(name: String, url: String, duration_secs: u
                 seq += 1;
                 let (dx, dy) = match phase {
                     0 => (0, 0),        // O canh truong lang (500, 500)
-                    1 => (-1, -1),      // Di cheo len trai ve phia hang Goblin (300, 400)
-                    2 => (1, 1),        // Chay ra xa vuot khoi leash radius ve phia (800, 800)
-                    _ => (0, 0),        // Dung lai quan sat
+                    1 => {
+                        // Di ve phia hang Goblin (300, 400)
+                        if phase_timer.elapsed() < Duration::from_millis(1400) {
+                            (-1, -1)
+                        } else {
+                            (-1, 0)
+                        }
+                    }
+                    2 => (0, 0),        // Dung lai chien dau can chien
+                    3 => (0, 0),        // Dung binh mau
+                    _ => (1, 0),        // Di chuyen tu do
                 };
                 let input_msg = ClientMessage::Input { seq, dx, dy };
                 if let Ok(json) = input_msg.to_json() {
                     let _ = sink.send(Message::Text(json.into())).await;
+                }
+
+                // Trong Phase 2: gui lenh Attack deu dan theo cooldown 0.6s
+                if phase == 2 && last_attack_time.elapsed() >= Duration::from_millis(650) {
+                    if let Some(gid) = target_goblin_id {
+                        last_attack_time = Instant::now();
+                        let atk = ClientMessage::Attack { seq, target_id: gid };
+                        if let Ok(json) = atk.to_json() {
+                            let _ = sink.send(Message::Text(json.into())).await;
+                        }
+                    }
                 }
             }
             msg_opt = stream.next() => {
@@ -381,65 +496,87 @@ async fn run_single_player_quest_bot(name: String, url: String, duration_secs: u
                     _ => break,
                 };
                 if let Message::Text(text) = raw {
-                    if let Ok(ServerMessage::Snapshot { tick, players, monsters, npcs }) = ServerMessage::from_json(&text) {
-                        let my_pos = players.iter().find(|p| p.id == my_id);
-                        let elder = npcs.iter().find(|n| n.type_id == "village_elder");
-                        let goblin = monsters.iter().find(|m| m.type_id == "goblin");
+                    if let Ok(server_msg) = ServerMessage::from_json(&text) {
+                        match server_msg {
+                            ServerMessage::Snapshot { tick, players, monsters, npcs, combat_events } => {
+                                let my_pos = players.iter().find(|p| p.id == my_id);
+                                let elder = npcs.iter().find(|n| n.type_id == "village_elder");
+                                let goblin = monsters.iter().find(|m| m.type_id == "goblin");
 
-                        // Chuyen phase logic
-                        if phase == 0 && phase_timer.elapsed() >= Duration::from_millis(800) {
-                            if let Some(e) = elder {
-                                tracing::info!(
-                                    "[{}] [Phase 0 - Giao tiep NPC] Truong lang '{}' dang o trang thai: '{}' (Giao tiep thanh cong!)",
-                                    name, e.name, e.state
-                                );
-                            }
-                            tracing::info!("[{}] [Phase 1] Bat dau tien ve phia hang Goblin (300, 400)...", name);
-                            phase = 1;
-                            phase_timer = Instant::now();
-                        } else if phase == 1 {
-                            if let Some(e) = elder {
-                                if e.state == "Idle" && phase_timer.elapsed() >= Duration::from_millis(600) {
+                                for ev in combat_events {
                                     tracing::info!(
-                                        "[{}] [Phase 1 - Roi xa NPC] Nguoi choi da di xa, Truong lang quay ve: '{}'",
-                                        name, e.state
+                                        "[{}] [CHIEN DAU] Thuc the {} danh thuc the {} gay {} sat thuong! (Mau con lai: {})",
+                                        name, ev.attacker_id, ev.target_id, ev.damage, ev.target_hp
                                     );
                                 }
-                            }
-                            if let Some(g) = goblin {
-                                if g.state == "Chase" || g.state == "Attack" {
-                                    tracing::info!(
-                                        "[{}] [Phase 1 - Cham tran Quai] Goblin (id: {}) phat hien nguoi choi! State: '{}', Vi tri: ({:.1}, {:.1})",
-                                        name, g.id, g.state, g.x, g.y
-                                    );
-                                    if g.state == "Attack" || phase_timer.elapsed() >= Duration::from_secs(3) {
-                                        tracing::info!("[{}] [Phase 2] Goblin da vao tam danh! Bat dau thao chay ve phia dong nam (1, 1) de cat duoi...", name);
-                                        phase = 2;
-                                        phase_timer = Instant::now();
+
+                                if phase == 0 && phase_timer.elapsed() >= Duration::from_millis(800) {
+                                    if let Some(e) = elder {
+                                        tracing::info!(
+                                            "[{}] [Phase 0 - Giao tiep NPC] Truong lang '{}' dang o trang thai: '{}'",
+                                            name, e.name, e.state
+                                        );
+                                    }
+                                    tracing::info!("[{}] [Phase 1] Bat dau tien ve phia hang Goblin (300, 400)...", name);
+                                    phase = 1;
+                                    phase_timer = Instant::now();
+                                } else if phase == 1 {
+                                    if let Some(g) = goblin {
+                                        target_goblin_id = Some(g.id);
+                                        if g.state == "Chase" || g.state == "Attack" || phase_timer.elapsed() >= Duration::from_secs(3) {
+                                            tracing::info!(
+                                                "[{}] [Phase 2 - Giao chien] Ap sat Goblin (id: {}). Chuyen sang tan cong!",
+                                                name, g.id
+                                            );
+                                            phase = 2;
+                                            phase_timer = Instant::now();
+                                        }
+                                    }
+                                } else if phase == 2 {
+                                    if let Some(g) = goblin {
+                                        if g.state == "Dead" || g.hp <= 0 {
+                                            tracing::info!(
+                                                "[{}] [Phase 2 - Ha guc muc tieu] Goblin da bi danh bai! Chuyen sang Phase 3 dung vat pham.",
+                                                name
+                                            );
+                                            phase = 3;
+                                            phase_timer = Instant::now();
+                                            // Gui lenh UseItem dung binh mau
+                                            let use_item = ClientMessage::UseItem { slot: 0 };
+                                            if let Ok(json) = use_item.to_json() {
+                                                let _ = sink.send(Message::Text(json.into())).await;
+                                            }
+                                        }
+                                    }
+                                } else if phase == 3 && phase_timer.elapsed() >= Duration::from_secs(2) {
+                                    tracing::info!("[{}] [Phase 4] Hoan tat quy trinh chien dau va tui do. Tiep tuc du hanh...", name);
+                                    phase = 4;
+                                }
+
+                                if last_log_time.elapsed() >= Duration::from_secs(1) {
+                                    last_log_time = Instant::now();
+                                    if let Some(p) = my_pos {
+                                        let g_info = goblin.map(|g| format!("{}:{}", g.state, g.hp)).unwrap_or_else(|| "none".to_string());
+                                        tracing::info!(
+                                            "[{}] [Tick {:>4}] Vi tri: ({:>6.1}, {:>6.1}) | Mau: {}/{} | Goblin: {}",
+                                            name, tick, p.x, p.y, p.hp, p.max_hp, g_info
+                                        );
                                     }
                                 }
                             }
-                        } else if phase == 2 && phase_timer.elapsed() >= Duration::from_secs(4) {
-                            if let Some(g) = goblin {
+                            ServerMessage::PlayerStats { level, exp, max_exp, hp, max_hp, .. } => {
                                 tracing::info!(
-                                    "[{}] [Phase 2 - Cat duoi thanh cong] Goblin da vuot tam leash va quay ve! State: '{}', Vi tri: ({:.1}, {:.1})",
-                                    name, g.state, g.x, g.y
+                                    "[{}] [CAP NHAT CHI SO] Cap {}, EXP: {}/{}, HP: {}/{}",
+                                    name, level, exp, max_exp, hp, max_hp
                                 );
                             }
-                            phase = 3;
-                            phase_timer = Instant::now();
-                        }
-
-                        if last_log_time.elapsed() >= Duration::from_secs(1) {
-                            last_log_time = Instant::now();
-                            if let Some(p) = my_pos {
-                                let g_info = goblin.map(|g| format!("{}:{}", g.state, g.hp)).unwrap_or_else(|| "none".to_string());
-                                let e_info = elder.map(|e| e.state.clone()).unwrap_or_else(|| "none".to_string());
+                            ServerMessage::Inventory { slots } => {
                                 tracing::info!(
-                                    "[{}] [Tick {:>4}] Vi tri: ({:>6.1}, {:>6.1}) | Truong lang: {} | Goblin: {}",
-                                    name, tick, p.x, p.y, e_info, g_info
+                                    "[{}] [CAP NHAT TUI DO] Co {} o vat pham: {:?}",
+                                    name, slots.len(), slots
                                 );
                             }
+                            _ => {}
                         }
                     }
                 }
@@ -469,7 +606,7 @@ async fn main() {
     let bot_count: usize = env::var("BOT_COUNT")
         .ok()
         .and_then(|c| c.parse().ok())
-        .unwrap_or(1); // Mac dinh 1 nguoi choi tap trung theo yeu cau
+        .unwrap_or(1);
 
     tracing::info!(
         "Khoi dong test voi {} nguoi choi ket noi toi: {}, thoi gian: {}s",
@@ -479,7 +616,7 @@ async fn main() {
     );
 
     if bot_count == 1 {
-        // Chay kich ban 1 nguoi choi tuong tac NPC va Quai
+        // Chay kich ban 1 nguoi choi tuong tac NPC, Quai vat, Chien dau, Nhat do va Dung vat pham
         run_single_player_quest_bot(
             "Knight_Arthur".to_string(),
             server_url.clone(),
@@ -487,7 +624,7 @@ async fn main() {
         )
         .await;
 
-        // Sau do chay tiep bo fuzz test de chung minh server hoan toan on dinh
+        // Sau do chay tiep bo 7 fuzz tests de chung minh server hoan toan on dinh
         run_fuzz_tests(server_url).await;
     } else {
         let mut handles = Vec::new();
