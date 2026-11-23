@@ -42,7 +42,62 @@ static func decode(text: String) -> Dictionary:
 						push_warning("Bỏ qua Snapshot có dữ liệu người chơi không hợp lệ.")
 						return {}
 					positions[int(player["id"])] = Vector2(player["x"], player["y"])
-				return {"type": "Snapshot", "tick": int(packet["tick"]), "positions": positions}
+
+				var monsters: Array[Dictionary] = []
+				if packet.get("monsters") is Array:
+					for monster: Variant in packet["monsters"]:
+						if (
+							not monster is Dictionary
+							or not _is_uint(monster.get("id"))
+							or not monster.get("type_id") is String
+							or not _is_coordinate(monster.get("x"))
+							or not _is_coordinate(monster.get("y"))
+							or not monster.get("state") is String
+							or not _is_int(monster.get("hp"))
+							or not _is_int(monster.get("max_hp"))
+						):
+							push_warning("Bỏ qua quái vật có dữ liệu không hợp lệ.")
+							continue
+						monsters.append({
+							"id": int(monster["id"]),
+							"type_id": monster["type_id"],
+							"x": float(monster["x"]),
+							"y": float(monster["y"]),
+							"state": monster["state"],
+							"hp": int(monster["hp"]),
+							"max_hp": int(monster["max_hp"]),
+						})
+
+				var npcs: Array[Dictionary] = []
+				if packet.get("npcs") is Array:
+					for npc: Variant in packet["npcs"]:
+						if (
+							not npc is Dictionary
+							or not _is_uint(npc.get("id"))
+							or not npc.get("type_id") is String
+							or not npc.get("name") is String
+							or not _is_coordinate(npc.get("x"))
+							or not _is_coordinate(npc.get("y"))
+							or not npc.get("state") is String
+						):
+							push_warning("Bỏ qua NPC có dữ liệu không hợp lệ.")
+							continue
+						npcs.append({
+							"id": int(npc["id"]),
+							"type_id": npc["type_id"],
+							"name": npc["name"],
+							"x": float(npc["x"]),
+							"y": float(npc["y"]),
+							"state": npc["state"],
+						})
+
+				return {
+					"type": "Snapshot",
+					"tick": int(packet["tick"]),
+					"positions": positions,
+					"monsters": monsters,
+					"npcs": npcs,
+				}
 		"Error":
 			if packet.get("message") is String:
 				return packet
@@ -55,6 +110,12 @@ static func _is_uint(value: Variant, maximum: int = MAX_EXACT_JSON_INT) -> bool:
 	if not (value is float or value is int):
 		return false
 	return is_finite(value) and value >= 0 and value <= maximum and floor(value) == value
+
+
+static func _is_int(value: Variant, maximum: int = MAX_EXACT_JSON_INT) -> bool:
+	if not (value is float or value is int):
+		return false
+	return is_finite(value) and absf(value) <= maximum and floor(value) == value
 
 
 static func _is_coordinate(value: Variant) -> bool:

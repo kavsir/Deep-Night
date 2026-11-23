@@ -200,7 +200,12 @@ func _handle_packet(packet: Dictionary) -> void:
 		"PlayerLeft":
 			_world.remove_player(int(packet["id"]))
 		"Snapshot":
-			_world.apply_snapshot(packet["tick"], packet["positions"])
+			_world.apply_snapshot(
+				packet["tick"],
+				packet["positions"],
+				packet.get("monsters", []),
+				packet.get("npcs", [])
+			)
 
 
 func _notification(what: int) -> void:
