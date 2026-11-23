@@ -3,6 +3,22 @@ use serde::{Deserialize, Serialize};
 /// Số phiên bản giao thức hiện tại
 pub const PROTOCOL_VERSION: &str = "v0";
 
+/// Tần số tick server (Hz)
+pub const TICK_RATE: u32 = 20;
+
+/// Tốc độ di chuyển người chơi (pixels/giây)
+pub const PLAYER_MOVE_SPEED: f32 = 200.0;
+
+/// Tọa độ giới hạn bản đồ
+pub const MAP_MIN_X: f32 = 0.0;
+pub const MAP_MAX_X: f32 = 1000.0;
+pub const MAP_MIN_Y: f32 = 0.0;
+pub const MAP_MAX_Y: f32 = 1000.0;
+
+/// Vị trí xuất hiện mặc định của người chơi
+pub const SPAWN_X: f32 = 500.0;
+pub const SPAWN_Y: f32 = 500.0;
+
 /// Kích thước gói tin văn bản WebSocket tối đa từ client (bytes)
 pub const MAX_MESSAGE_SIZE: usize = 4096;
 

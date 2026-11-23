@@ -5,3 +5,4 @@
 - 003: Lưu trữ SQLite (rusqlite), nội dung game bằng JSON trong data/.
 - 004: Gói tin WebSocket định dạng JSON dùng trường "type" phân biệt loại gói (serde tag = "type"). Phiên bản protocol ban đầu là v0.
 - 005: Giới hạn kích thước gói client -> server tối đa 4096 bytes (4KB), rate limit Input tối đa 30 gói/giây từ mỗi client để chống spam và bù jitter.
+- 006: Thêm crate futures-util để sử dụng StreamExt và SinkExt trên WebSocketStream.

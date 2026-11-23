@@ -145,13 +145,23 @@ Thông báo lỗi từ server gửi tới client (ví dụ: dữ liệu không h
 
 ---
 
-## 4. Giới hạn kỹ thuật (Limits)
+## 4. Giới hạn kỹ thuật và Hằng số thế giới (Limits & Constants)
 
-1. **Kích thước gói tin tối đa (Max Packet Size)**:
+1. **Hằng số thế giới & Di chuyển**:
+   - `TICK_RATE`: **20 Hz** (chu kỳ mỗi tick: 50ms).
+   - `PLAYER_MOVE_SPEED`: **200.0 pixels / giây** (tương đương `10.0 pixels / tick` khi di chuyển đơn trục; khi di chuyển chéo sẽ chuẩn hóa vector với độ dài 1.0 để vận tốc không bị tăng lên $\sqrt{2}$).
+   - `MAP_MIN_X`: **0.0**
+   - `MAP_MAX_X`: **1000.0**
+   - `MAP_MIN_Y`: **0.0**
+   - `MAP_MAX_Y`: **1000.0**
+   - `SPAWN_X`: **500.0**
+   - `SPAWN_Y`: **500.0**
+
+2. **Kích thước gói tin tối đa (Max Packet Size)**:
    - Client -> Server: Tối đa **4096 bytes (4 KB)** cho mỗi frame văn bản WebSocket.
    - Bất kỳ frame nào vượt quá giới hạn này sẽ bị hủy bỏ ngay lập tức và server ngắt kết nối client vi phạm.
 
-2. **Tần suất gói tin tối đa (Rate Limit)**:
+3. **Tần suất gói tin tối đa (Rate Limit)**:
    - Gói `Input`: Tối đa **30 gói / giây** cho mỗi client (server chạy ở 20Hz, ngưỡng 30 gói/giây cho phép bù đắp biến thiên độ trễ mạng - network jitter).
    - Gói `Join`: Tối đa **1 lần** cho mỗi phiên kết nối.
    - Tổng tần suất gói tin từ một client: Không vượt quá **60 gói / giây**.
