@@ -1,9 +1,9 @@
 # STATUS
 
 ## Đang làm
-- Bước 3 (quái và NPC) chờ chốt giao thức và dữ liệu từ server. `Snapshot` v0 hiện chỉ có `tick` và `players`. Phần client sẽ bắt đầu khi giao thức được duyệt.
-- Bước 2 (thử qua Tailscale và đo độ trễ) tạm hoãn theo yêu cầu, giữ checkbox mở.
-- Client và server đã qua kiểm tra kết nối cục bộ của Bước 1. Còn vướng hiển thị chi tiết lỗi trùng tên khi server đóng WebSocket ngay sau gói `Error`.
+- Đã soạn thảo xong đề xuất giao thức **PROTOCOL.md phiên bản v0.1** cho Bước 3 (Quái và NPC State Machine).
+- Dừng lại theo đúng quy tắc AGENTS.md (mục "Quy trình đổi giao thức": chỉ sửa PROTOCOL.md, mô tả đề xuất, KHÔNG viết code, rồi báo con người duyệt).
+- Chờ con người duyệt nội dung đề xuất `PROTOCOL.md` v0.1 trước khi cập nhật crate `protocol/` và viết code logic server/client.
 
 ## Vừa xong
 - Client Godot 4 có màn hình kết nối mặc định `127.0.0.1:7777`, gửi `Join`, vào bản đồ khi nhận `Welcome` và quay lại màn hình kết nối khi mất phiên.
