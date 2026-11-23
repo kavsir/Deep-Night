@@ -1,12 +1,26 @@
 # STATUS
 
 ## Đang làm
-- Chờ Agent CLIENT triển khai hiển thị Quái vật và NPC trên client Godot 4 cho Bước 3.
-- Phía Server và Bot test tập trung 1 người chơi cho Bước 3 đã hoàn thành xuất sắc.
+- Bước 2 trong ROADMAP (Quái và NPC State Machine trên server, client hiển thị) đã hoàn tất 100% cả phía Server và Client.
+- Chờ chỉ đạo của con người để chuyển sang Bước 3 (Chiến đấu, kinh nghiệm, túi đồ).
 
 ## Vừa xong
 
-### Server Bước 3 (Quái & NPC State Machine - Tập trung 1 người chơi)
+### Client Bước 2 (Hiển thị Quái vật & NPC trên Godot 4)
+- Cập nhật [client/server_packet.gd](file:///d:/Deep-Night/client/server_packet.gd): Giải mã và kiểm tra kiểu an toàn mảng `monsters` (id, type_id, x, y, state, hp, max_hp) và `npcs` (id, type_id, name, x, y, state) từ bản tin `Snapshot` v0.1.
+- Nâng cấp [client/world.gd](file:///d:/Deep-Night/client/world.gd):
+  - Hiển thị Quái vật: Hình khối đa giác phân biệt cho từng loài (Goblin: thoi xanh lá `#40c057`, Sói xám: đa giác đỏ thẫm `#e03131`), thanh máu HP nền xám thanh đo xanh lá co giãn theo tỷ lệ máu, nhãn trạng thái FSM đổi màu động (`[Đuổi theo]` màu cam, `[Tấn công!]` màu đỏ rực, `[Quay về]` màu xanh ngọc, `[Tuần tra]` màu xanh dương nhạt, `[Đã gục]` mờ 50%).
+  - Hiển thị NPC: Hình khiên gia huy xanh dương (`Trưởng làng Galahad`, `Lính canh`) kèm tên hiển thị có viền chữ rõ nét và huy hiệu thoại `💬 Trò chuyện` màu vàng kim tự động xuất hiện khi người chơi ở cự ly $\le 50\text{px}$.
+  - Nội suy chuyển động mượt mà (linear interpolation) cho toàn bộ Quái vật và NPC giữa các snapshot 20Hz.
+  - Quản lý vòng đời thực thể: tự động tạo node khi thực thể mới xuất hiện, giải phóng node (`queue_free()`) khi thực thể biến mất khỏi snapshot.
+- Cập nhật [client/main.gd](file:///d:/Deep-Night/client/main.gd): Chuyển tiếp mảng `monsters` và `npcs` từ `Snapshot` vào `world.gd`.
+- Viết [client/test_runner.gd](file:///d:/Deep-Night/client/test_runner.gd) kiểm thử tự động trên Godot 4.4.1 headless:
+  - Test 1: Giải mã chính xác gói `Snapshot` v0.1 chứa quái và NPC.
+  - Test 2: Khởi tạo, cập nhật trạng thái FSM, co giãn thanh máu, ẩn/hiện huy hiệu thoại và giải phóng node trong `World`.
+  - Test 3: Kết nối trực tiếp vào server đang chạy tại `ws://127.0.0.1:7777`, Join và nhận đầy đủ dữ liệu quái/NPC.
+  - Kết quả kiểm thử: **TOÀN BỘ TEST GODOT CLIENT PASSED**.
+
+### Server Bước 2 (Quái & NPC State Machine - Tập trung 1 người chơi)
 - Hoàn thiện nâng cấp giao thức `PROTOCOL.md` lên **v0.1**: bổ sung `monsters` và `npcs` vào `Snapshot`, quy định các trạng thái FSM của quái vật (`Idle`, `Patrol`, `Chase`, `Attack`, `Return`, `Dead`) và NPC (`Idle`, `Patrol`, `Talk`).
 - Thêm dữ liệu nội dung game trong `data/monsters.json` (Goblin, Sói xám với tầm aggro, tầm đánh, bán kính leash, chu kỳ hồi sinh) và `data/npcs.json` (Trưởng làng Galahad idle và Lính canh tuần tra waypoint).
 - Triển khai State Machine cho Quái vật và NPC trong `server/src/entities.rs`:
@@ -20,30 +34,10 @@
   - Tiến về bãi quái Goblin tại (300, 400), ghi nhận Goblin phát hiện người chơi và chuyển sang `Chase`, áp sát chuyển sang `Attack`.
   - Tháo chạy về phía đông nam vượt tầm leash, ghi nhận Goblin bỏ đuổi và chuyển sang `Return` quay về điểm spawn rồi trở về `Idle`.
   - Chạy tiếp 5 bài kiểm tra gói rác (fuzz tests): JSON lỗi, gói > 4096 bytes, `dx=5`, trùng tên người chơi đang online, gửi Input khi chưa Join. Toàn bộ test vượt qua, chứng minh server không sập.
-- Bổ sung 2 integration test tự động trong `server/tests/server_test.rs`:
-  - `test_single_player_monster_aggro_and_leash`: kiểm chứng FSM quái vật phản ứng với 1 người chơi (Aggro -> Chase -> Attack -> Leash Return -> Idle).
-  - `test_single_player_npc_interaction_proximity`: kiểm chứng FSM NPC chuyển đổi `Talk` và `Idle` theo khoảng cách người chơi.
-  - `test_duplicate_name_rejected`: kiểm chứng nhận được cả gói tin `Error` và khung WebSocket Close frame chứa đúng lý do lỗi.
-- Kết quả kiểm tra:
-  - `cargo fmt --check`: PASSED.
-  - `cargo clippy --workspace --tests -- -D warnings`: PASSED (0 warnings).
-  - `cargo test --workspace`: 12/12 tests passed (5 unit tests protocol, 7 integration tests server).
-  - Chạy thực tế `target/debug/server.exe` và `target/debug/bot.exe`: kịch bản 1 người chơi và bộ fuzz tests chạy mượt mà, đầy đủ log chuyển đổi trạng thái.
+- Bổ sung 2 integration test tự động trong `server/tests/server_test.rs`: 12/12 tests passed toàn workspace.
 
-### Client Bước 1
-- Client Godot 4 có màn hình kết nối mặc định `127.0.0.1:7777`, gửi `Join`, vào bản đồ khi nhận `Welcome` và quay lại màn hình kết nối khi mất phiên.
-- Client tạo danh sách nhân vật từ `PlayerJoined` / `PlayerLeft`, gắn camera theo nhân vật cục bộ và nội suy giữa hai `Snapshot` dựa trên `tick_rate`. WASD gửi hướng ngay khi đổi, kể cả khi nhả phím, và gửi lại sau ít nhất 100 ms khi giữ hướng. Vị trí lấy từ server.
-
-## Yêu cầu cho agent kia (Agent CLIENT)
-- Phía Server đã hoàn tất toàn bộ logic State Machine cho Quái vật và NPC trong Bước 3.
-- Giao thức `Snapshot` đã có 2 trường `monsters: Vec<MonsterSnapshot>` và `npcs: Vec<NpcSnapshot>` (xem chi tiết trong `PROTOCOL.md` v0.1).
-- Người chơi mới xuất hiện tại `(500, 500)` ngay cạnh Trưởng làng Galahad tại `(520, 510)`. Ở khoảng cách này, Trưởng làng sẽ có `state: "Talk"`.
-- Bãi quái Goblin gần nhất ở `(300, 400)`. Khi người chơi tiếp cận (khoảng cách <= 180px), Goblin sẽ chuyển sang `state: "Chase"` và đuổi theo người chơi, sau đó chuyển sang `state: "Attack"` khi khoảng cách <= 35px.
-- Agent CLIENT chỉ cần:
-  1. Cập nhật giải mã gói `Snapshot` để lấy thêm danh sách `monsters` và `npcs`.
-  2. Tạo scene / node hiển thị NPC (hiển thị tên, trạng thái thoại/bong bóng chat khi `state == "Talk"`).
-  3. Tạo scene / node hiển thị Quái vật (thanh máu `hp / max_hp`, hoạt ảnh theo `state`: Idle/Patrol/Chase/Attack/Return/Dead).
-  4. Nội suy tọa độ `x, y` của quái và NPC mượt mà giữa các snapshot như đã làm với người chơi.
+## Yêu cầu cho agent kia
+- Không có. Cả hai phía Server và Client đã hoàn thành đồng bộ Bước 2.
 
 ## Bẫy đã gặp
 - Khi bot fuzz test kiểm tra trùng tên chạy độc lập (Fuzz 4), nếu gửi tên một bot không online thì server chấp nhận thay vì từ chối. Cần tạo 1 kết nối client thành công trước rồi cho client thứ 2 thử đăng ký cùng tên đó.
