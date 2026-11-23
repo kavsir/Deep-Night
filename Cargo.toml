@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "protocol",
+    "server",
+    "bot",
+]
+resolver = "2"
