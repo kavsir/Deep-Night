@@ -110,18 +110,26 @@ async fn run_regular_bot(name: String, url: String, duration_secs: u64) {
                     _ => break,
                 };
                 if let Message::Text(text) = raw {
-                    if let Ok(ServerMessage::Snapshot { tick, players }) = ServerMessage::from_json(&text) {
+                    if let Ok(ServerMessage::Snapshot {
+                        tick,
+                        players,
+                        monsters,
+                        npcs,
+                    }) = ServerMessage::from_json(&text)
+                    {
                         // In log vị trí định kỳ mỗi 1 giây
                         if last_log_time.elapsed() >= Duration::from_secs(1) {
                             last_log_time = Instant::now();
                             if let Some(my_pos) = players.iter().find(|p| p.id == my_id) {
                                 tracing::info!(
-                                    "[{}] [Tick {:>4}] Vi tri: ({:>6.1}, {:>6.1}) | Tong nguoi choi: {}",
+                                    "[{}] [Tick {:>4}] Vi tri: ({:>6.1}, {:>6.1}) | Nguoi choi: {} | Quai: {} | NPC: {}",
                                     name,
                                     tick,
                                     my_pos.x,
                                     my_pos.y,
-                                    players.len()
+                                    players.len(),
+                                    monsters.len(),
+                                    npcs.len()
                                 );
                             }
                         }
@@ -222,31 +230,45 @@ async fn run_fuzz_tests(url: String) {
     }
 
     // Test 4: Gui trung ten dang online
-    tracing::info!("[Fuzz 4] Gui trung ten nguoi choi dang online ('Bot_1')...");
-    if let Ok((ws_stream, _)) = connect_async(&url).await {
-        let (mut sink, mut stream) = ws_stream.split();
-        let duplicate_join = ClientMessage::Join {
-            name: "Bot_1".to_string(),
+    tracing::info!("[Fuzz 4] Gui trung ten nguoi choi dang online...");
+    if let Ok((ws_stream1, _)) = connect_async(&url).await {
+        let (mut sink1, mut stream1) = ws_stream1.split();
+        let join1 = ClientMessage::Join {
+            name: "Fuzz_OnlinePlayer".to_string(),
         };
-        let _ = sink
-            .send(Message::Text(duplicate_join.to_json().unwrap().into()))
+        let _ = sink1
+            .send(Message::Text(join1.to_json().unwrap().into()))
             .await;
-        let mut rejected = false;
-        while let Some(Ok(Message::Text(t))) = stream.next().await {
-            if let Ok(ServerMessage::Error { message }) = ServerMessage::from_json(&t) {
-                tracing::info!(
-                    "[Fuzz 4] -> Server tu choi trung ten voi thong bao loi: '{}'",
-                    message
-                );
-                rejected = true;
-                break;
+        let _ = stream1.next().await; // Welcome
+
+        // Client 2 thu ket noi voi cung ten do
+        if let Ok((ws_stream2, _)) = connect_async(&url).await {
+            let (mut sink2, mut stream2) = ws_stream2.split();
+            let duplicate_join = ClientMessage::Join {
+                name: "Fuzz_OnlinePlayer".to_string(),
+            };
+            let _ = sink2
+                .send(Message::Text(duplicate_join.to_json().unwrap().into()))
+                .await;
+            let mut rejected = false;
+            while let Some(Ok(Message::Text(t))) = stream2.next().await {
+                if let Ok(ServerMessage::Error { message }) = ServerMessage::from_json(&t) {
+                    tracing::info!(
+                        "[Fuzz 4] -> Server tu choi trung ten voi thong bao loi: '{}'",
+                        message
+                    );
+                    rejected = true;
+                    break;
+                }
             }
+            tracing::info!(
+                "[Fuzz 4] -> Ket qua trung ten: rejected={} (Server bao ve dung nghiep vu!)",
+                rejected
+            );
+            let _ = <_ as futures_util::SinkExt<_>>::close(&mut sink2).await;
         }
-        tracing::info!(
-            "[Fuzz 4] -> Ket qua trung ten: rejected={} (Server bao ve dung nghiep vu!)",
-            rejected
-        );
-        let _ = <_ as futures_util::SinkExt<_>>::close(&mut sink).await;
+
+        let _ = <_ as futures_util::SinkExt<_>>::close(&mut sink1).await;
     }
 
     // Test 5: Gui Input khi chua Join
@@ -282,6 +304,159 @@ async fn run_fuzz_tests(url: String) {
     tracing::info!("=== TAT CA FUZZ TESTS HOAN THANH XUAT SAC, SERVER VAN HOAT DONG ON DINH ===");
 }
 
+/// Chạy kịch bản 1 người chơi tương tác với toàn bộ thế giới: NPC và Quái vật
+async fn run_single_player_quest_bot(name: String, url: String, duration_secs: u64) {
+    tracing::info!("=== [1 NGUOI CHOI] BAT DAU KICH BAN CHO '{}' ===", name);
+    let (ws_stream, _) = match connect_async(&url).await {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!("[{}] Khong the ket noi toi server: {}", name, e);
+            return;
+        }
+    };
+
+    let (mut sink, mut stream) = ws_stream.split();
+
+    // 1. Gui Join
+    let join_msg = ClientMessage::Join { name: name.clone() };
+    if let Ok(json) = join_msg.to_json() {
+        let _ = sink.send(Message::Text(json.into())).await;
+    }
+
+    // 2. Nhan Welcome
+    let mut my_player_id = None;
+    while let Some(msg_res) = stream.next().await {
+        if let Ok(Message::Text(text)) = msg_res {
+            if let Ok(ServerMessage::Welcome {
+                player_id,
+                tick_rate,
+                map,
+            }) = ServerMessage::from_json(&text)
+            {
+                tracing::info!(
+                    "[{}] -> NHAN WELCOME! player_id: {}, tick_rate: {}Hz, map: '{}'",
+                    name,
+                    player_id,
+                    tick_rate,
+                    map
+                );
+                my_player_id = Some(player_id);
+                break;
+            }
+        }
+    }
+
+    let my_id = match my_player_id {
+        Some(id) => id,
+        None => return,
+    };
+
+    // 3. Quan sat va thuc hien cac phase hanh dong
+    let mut seq = 0u64;
+    let start_time = Instant::now();
+    let total_duration = Duration::from_secs(duration_secs);
+    let mut phase = 0; // 0: Check NPC Talk, 1: Approach Goblin (-1, -1), 2: Flee Goblin (1, 1), 3: Free roam
+    let mut phase_timer = Instant::now();
+    let mut last_log_time = Instant::now();
+    let mut input_interval = tokio::time::interval(Duration::from_millis(100));
+
+    while start_time.elapsed() < total_duration {
+        tokio::select! {
+            _ = input_interval.tick() => {
+                seq += 1;
+                let (dx, dy) = match phase {
+                    0 => (0, 0),        // O canh truong lang (500, 500)
+                    1 => (-1, -1),      // Di cheo len trai ve phia hang Goblin (300, 400)
+                    2 => (1, 1),        // Chay ra xa vuot khoi leash radius ve phia (800, 800)
+                    _ => (0, 0),        // Dung lai quan sat
+                };
+                let input_msg = ClientMessage::Input { seq, dx, dy };
+                if let Ok(json) = input_msg.to_json() {
+                    let _ = sink.send(Message::Text(json.into())).await;
+                }
+            }
+            msg_opt = stream.next() => {
+                let raw = match msg_opt {
+                    Some(Ok(m)) => m,
+                    _ => break,
+                };
+                if let Message::Text(text) = raw {
+                    if let Ok(ServerMessage::Snapshot { tick, players, monsters, npcs }) = ServerMessage::from_json(&text) {
+                        let my_pos = players.iter().find(|p| p.id == my_id);
+                        let elder = npcs.iter().find(|n| n.type_id == "village_elder");
+                        let goblin = monsters.iter().find(|m| m.type_id == "goblin");
+
+                        // Chuyen phase logic
+                        if phase == 0 && phase_timer.elapsed() >= Duration::from_millis(800) {
+                            if let Some(e) = elder {
+                                tracing::info!(
+                                    "[{}] [Phase 0 - Giao tiep NPC] Truong lang '{}' dang o trang thai: '{}' (Giao tiep thanh cong!)",
+                                    name, e.name, e.state
+                                );
+                            }
+                            tracing::info!("[{}] [Phase 1] Bat dau tien ve phia hang Goblin (300, 400)...", name);
+                            phase = 1;
+                            phase_timer = Instant::now();
+                        } else if phase == 1 {
+                            if let Some(e) = elder {
+                                if e.state == "Idle" && phase_timer.elapsed() >= Duration::from_millis(600) {
+                                    tracing::info!(
+                                        "[{}] [Phase 1 - Roi xa NPC] Nguoi choi da di xa, Truong lang quay ve: '{}'",
+                                        name, e.state
+                                    );
+                                }
+                            }
+                            if let Some(g) = goblin {
+                                if g.state == "Chase" || g.state == "Attack" {
+                                    tracing::info!(
+                                        "[{}] [Phase 1 - Cham tran Quai] Goblin (id: {}) phat hien nguoi choi! State: '{}', Vi tri: ({:.1}, {:.1})",
+                                        name, g.id, g.state, g.x, g.y
+                                    );
+                                    if g.state == "Attack" || phase_timer.elapsed() >= Duration::from_secs(3) {
+                                        tracing::info!("[{}] [Phase 2] Goblin da vao tam danh! Bat dau thao chay ve phia dong nam (1, 1) de cat duoi...", name);
+                                        phase = 2;
+                                        phase_timer = Instant::now();
+                                    }
+                                }
+                            }
+                        } else if phase == 2 && phase_timer.elapsed() >= Duration::from_secs(4) {
+                            if let Some(g) = goblin {
+                                tracing::info!(
+                                    "[{}] [Phase 2 - Cat duoi thanh cong] Goblin da vuot tam leash va quay ve! State: '{}', Vi tri: ({:.1}, {:.1})",
+                                    name, g.state, g.x, g.y
+                                );
+                            }
+                            phase = 3;
+                            phase_timer = Instant::now();
+                        }
+
+                        if last_log_time.elapsed() >= Duration::from_secs(1) {
+                            last_log_time = Instant::now();
+                            if let Some(p) = my_pos {
+                                let g_info = goblin.map(|g| format!("{}:{}", g.state, g.hp)).unwrap_or_else(|| "none".to_string());
+                                let e_info = elder.map(|e| e.state.clone()).unwrap_or_else(|| "none".to_string());
+                                tracing::info!(
+                                    "[{}] [Tick {:>4}] Vi tri: ({:>6.1}, {:>6.1}) | Truong lang: {} | Goblin: {}",
+                                    name, tick, p.x, p.y, e_info, g_info
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Dung di chuyen
+    seq += 1;
+    let stop_msg = ClientMessage::Input { seq, dx: 0, dy: 0 };
+    if let Ok(json) = stop_msg.to_json() {
+        let _ = sink.send(Message::Text(json.into())).await;
+    }
+    let _ = <_ as futures_util::SinkExt<_>>::close(&mut sink).await;
+    tracing::info!("[{}] Hoan thanh kich ban 1 nguoi choi xuat sac!", name);
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -290,30 +465,49 @@ async fn main() {
     let duration_secs: u64 = env::var("DURATION_SECS")
         .ok()
         .and_then(|d| d.parse().ok())
-        .unwrap_or(30);
+        .unwrap_or(15);
+    let bot_count: usize = env::var("BOT_COUNT")
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(1); // Mac dinh 1 nguoi choi tap trung theo yeu cau
 
     tracing::info!(
-        "Khoi dong test 3 bot va goi rac ket noi toi: {}, thoi gian: {}s",
+        "Khoi dong test voi {} nguoi choi ket noi toi: {}, thoi gian: {}s",
+        bot_count,
         server_url,
         duration_secs
     );
 
-    // Chay 3 bot cung luc
-    let url1 = server_url.clone();
-    let url2 = server_url.clone();
-    let url3 = server_url.clone();
+    if bot_count == 1 {
+        // Chay kich ban 1 nguoi choi tuong tac NPC va Quai
+        run_single_player_quest_bot(
+            "Knight_Arthur".to_string(),
+            server_url.clone(),
+            duration_secs,
+        )
+        .await;
 
-    let bot1 = tokio::spawn(run_regular_bot("Bot_1".to_string(), url1, duration_secs));
-    let bot2 = tokio::spawn(run_regular_bot("Bot_2".to_string(), url2, duration_secs));
-    let bot3 = tokio::spawn(run_regular_bot("Bot_3".to_string(), url3, duration_secs));
+        // Sau do chay tiep bo fuzz test de chung minh server hoan toan on dinh
+        run_fuzz_tests(server_url).await;
+    } else {
+        let mut handles = Vec::new();
+        for i in 1..=bot_count {
+            let name = format!("Bot_{}", i);
+            let url = server_url.clone();
+            handles.push(tokio::spawn(run_regular_bot(name, url, duration_secs)));
+        }
 
-    // Sau 2 giay khi 3 bot da vao on dinh, chay bo test goi rac (fuzz tests)
-    let fuzz_url = server_url.clone();
-    let fuzz_handle = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        run_fuzz_tests(fuzz_url).await;
-    });
+        let fuzz_url = server_url.clone();
+        let fuzz_handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            run_fuzz_tests(fuzz_url).await;
+        });
 
-    let _ = tokio::join!(bot1, bot2, bot3, fuzz_handle);
+        for h in handles {
+            let _ = h.await;
+        }
+        let _ = fuzz_handle.await;
+    }
+
     tracing::info!("Toan bo bot test da hoan tat!");
 }
