@@ -24,6 +24,17 @@ var _connect_button: Button
 var _status: Label
 var _notice: Label
 
+# HUD Chiến đấu & Túi đồ (v0.2)
+var _hud_layer: CanvasLayer
+var _hud_container: VBoxContainer
+var _player_info_label: Label
+var _hp_bar: ProgressBar
+var _exp_bar: ProgressBar
+var _stats_label: Label
+var _inventory_container: HBoxContainer
+var _inventory_slots: Array[Button] = []
+var _controls_hint: Label
+
 
 func _ready() -> void:
 	var overlay: CanvasLayer = CanvasLayer.new()
@@ -63,6 +74,81 @@ func _ready() -> void:
 	_notice.add_theme_constant_override("outline_size", 6)
 	_notice.hide()
 	overlay.add_child(_notice)
+
+	_setup_hud()
+
+
+func _setup_hud() -> void:
+	_hud_layer = CanvasLayer.new()
+	add_child(_hud_layer)
+
+	# 1. Panel thông tin chỉ số người chơi (Góc trên bên trái)
+	_hud_container = VBoxContainer.new()
+	_hud_container.position = Vector2(16, 16)
+	_hud_container.custom_minimum_size.x = 240
+	_hud_container.add_theme_constant_override("separation", 4)
+	_hud_layer.add_child(_hud_container)
+
+	_player_info_label = Label.new()
+	_player_info_label.text = "[Lv. 1] Hiệp sĩ"
+	_player_info_label.add_theme_font_size_override("font_size", 16)
+	_player_info_label.add_theme_color_override("font_outline_color", Color("#16201b"))
+	_player_info_label.add_theme_constant_override("outline_size", 5)
+	_hud_container.add_child(_player_info_label)
+
+	_hp_bar = ProgressBar.new()
+	_hp_bar.custom_minimum_size = Vector2(240, 18)
+	_hp_bar.min_value = 0
+	_hp_bar.max_value = 100
+	_hp_bar.value = 100
+	_hp_bar.show_percentage = false
+	_hud_container.add_child(_hp_bar)
+
+	_exp_bar = ProgressBar.new()
+	_exp_bar.custom_minimum_size = Vector2(240, 12)
+	_exp_bar.min_value = 0
+	_exp_bar.max_value = 100
+	_exp_bar.value = 0
+	_exp_bar.show_percentage = false
+	_hud_container.add_child(_exp_bar)
+
+	_stats_label = Label.new()
+	_stats_label.text = "HP: 100/100  |  EXP: 0/100  |  Công: 15  Thủ: 2"
+	_stats_label.add_theme_font_size_override("font_size", 11)
+	_stats_label.add_theme_color_override("font_outline_color", Color("#16201b"))
+	_stats_label.add_theme_constant_override("outline_size", 4)
+	_hud_container.add_child(_stats_label)
+
+	# 2. Thanh Túi đồ Quickbar (Phía dưới màn hình)
+	var bottom_container: VBoxContainer = VBoxContainer.new()
+	bottom_container.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	bottom_container.position.y = -70
+	bottom_container.add_theme_constant_override("separation", 4)
+	_hud_layer.add_child(bottom_container)
+
+	_inventory_container = HBoxContainer.new()
+	_inventory_container.alignment = BoxContainer.ALIGNMENT_CENTER
+	_inventory_container.add_theme_constant_override("separation", 6)
+	bottom_container.add_child(_inventory_container)
+
+	for i: int in range(6):
+		var btn: Button = Button.new()
+		btn.custom_minimum_size = Vector2(100, 36)
+		btn.text = "[%d] Trống" % (i + 1)
+		var slot_idx: int = i
+		btn.pressed.connect(func() -> void: _use_item(slot_idx))
+		_inventory_container.add_child(btn)
+		_inventory_slots.append(btn)
+
+	_controls_hint = Label.new()
+	_controls_hint.text = "[WASD]: Di chuyển  |  [Space]: Tấn công quái gần  |  [Phím 1-6]: Dùng đồ"
+	_controls_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_controls_hint.add_theme_font_size_override("font_size", 12)
+	_controls_hint.add_theme_color_override("font_outline_color", Color("#16201b"))
+	_controls_hint.add_theme_constant_override("outline_size", 4)
+	bottom_container.add_child(_controls_hint)
+
+	_hud_layer.hide()
 
 
 func _add_field(form: VBoxContainer, caption: String, value: String) -> LineEdit:
@@ -162,6 +248,51 @@ func _process(_delta: float) -> void:
 		_send_movement()
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	if _world == null or not _has_focus:
+		return
+
+	if event is InputEventKey and event.pressed and not event.echo:
+		match event.keycode:
+			KEY_SPACE:
+				_attack_nearest_monster()
+			KEY_1:
+				_use_item(0)
+			KEY_2:
+				_use_item(1)
+			KEY_3:
+				_use_item(2)
+			KEY_4:
+				_use_item(3)
+			KEY_5:
+				_use_item(4)
+			KEY_6:
+				_use_item(5)
+
+
+func _attack_nearest_monster() -> void:
+	if _world == null:
+		return
+	var target_id: int = _world.selected_target_id
+	if target_id == 0:
+		target_id = _world.get_nearest_monster(60.0)
+
+	if target_id > 0:
+		_seq += 1
+		_send({
+			"type": "Attack",
+			"seq": _seq,
+			"target_id": target_id,
+		})
+
+
+func _use_item(slot: int) -> void:
+	_send({
+		"type": "UseItem",
+		"slot": slot,
+	})
+
+
 func _handle_packet(packet: Dictionary) -> void:
 	var kind: String = packet["type"]
 	if kind == "Error":
@@ -188,6 +319,8 @@ func _handle_packet(packet: Dictionary) -> void:
 		_next_repeat_ms = 0
 		_server_error = ""
 		_connection_screen.hide()
+		_hud_layer.show()
+		_player_info_label.text = "[Lv. 1] %s" % _join_name
 		return
 
 	if _world == null:
@@ -199,13 +332,63 @@ func _handle_packet(packet: Dictionary) -> void:
 			_world.add_player(int(packet["id"]), packet["name"])
 		"PlayerLeft":
 			_world.remove_player(int(packet["id"]))
+		"PlayerStats":
+			_update_hud_stats(packet)
+		"Inventory":
+			_update_hud_inventory(packet)
 		"Snapshot":
 			_world.apply_snapshot(
 				packet["tick"],
 				packet["positions"],
 				packet.get("monsters", []),
-				packet.get("npcs", [])
+				packet.get("npcs", []),
+				packet.get("player_meta", {}),
+				packet.get("combat_events", [])
 			)
+
+
+func _update_hud_stats(stats: Dictionary) -> void:
+	var level: int = stats.get("level", 1)
+	var exp: int = stats.get("exp", 0)
+	var max_exp: int = stats.get("max_exp", 100)
+	var hp: int = stats.get("hp", 100)
+	var max_hp: int = stats.get("max_hp", 100)
+	var atk: int = stats.get("attack_power", 15)
+	var def: int = stats.get("defense", 2)
+
+	_player_info_label.text = "[Lv. %d] %s" % [level, _join_name]
+
+	_hp_bar.max_value = max_hp
+	_hp_bar.value = hp
+
+	_exp_bar.max_value = max_exp
+	_exp_bar.value = exp
+
+	_stats_label.text = "HP: %d/%d  |  EXP: %d/%d  |  Công: %d  Thủ: %d" % [
+		hp, max_hp, exp, max_exp, atk, def
+	]
+
+
+func _update_hud_inventory(inv: Dictionary) -> void:
+	var slots: Array = inv.get("slots", [])
+	var slot_map: Dictionary = {}
+	for item: Variant in slots:
+		if item is Dictionary:
+			slot_map[int(item["slot"])] = item
+
+	for i: int in range(_inventory_slots.size()):
+		var btn: Button = _inventory_slots[i]
+		if slot_map.has(i):
+			var item: Dictionary = slot_map[i]
+			var item_id: String = item["item_id"]
+			var display_name: String = "Bình máu" if item_id == "potion_hp" else (
+				"Tai yêu tinh" if item_id == "goblin_ear" else (
+					"Da sói" if item_id == "wolf_pelt" else item_id
+				)
+			)
+			btn.text = "[%d] %s (%d)" % [i + 1, display_name, item["count"]]
+		else:
+			btn.text = "[%d] Trống" % (i + 1)
 
 
 func _notification(what: int) -> void:
@@ -253,6 +436,7 @@ func _end_session(reason: String) -> void:
 		remove_child(_world)
 		_world.queue_free()
 		_world = null
+	_hud_layer.hide()
 	_notice.hide()
 	_connection_screen.show()
 	_connect_button.disabled = false

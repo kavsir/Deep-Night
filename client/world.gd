@@ -1,5 +1,7 @@
 extends Node2D
 
+signal monster_targeted(monster_id: int)
+
 const MAP_SIZE: Vector2i = Vector2i(1024, 1024)
 const TILE_SIZE: int = 32
 const TILE_COLORS: Array[Color] = [Color("#3a5144"), Color("#425b4b")]
@@ -15,6 +17,7 @@ const HP_FILL_COLOR: Color = Color("#51cf66")
 
 var local_id: int
 var tick_rate: int
+var selected_target_id: int = 0
 
 var _players: Dictionary = {}
 var _camera: Camera2D
@@ -28,6 +31,8 @@ var _latest_monster_positions: Dictionary = {}
 var _npcs: Dictionary = {}
 var _previous_npc_positions: Dictionary = {}
 var _latest_npc_positions: Dictionary = {}
+
+var _floating_texts: Array[Dictionary] = []
 
 var _latest_tick: int = -1
 var _snapshot_time_us: int
@@ -51,6 +56,7 @@ func add_player(id: int, player_name: String) -> void:
 	player.add_child(body)
 
 	var name_label: Label = Label.new()
+	name_label.name = "NameLabel"
 	name_label.text = player_name
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	name_label.add_theme_color_override("font_outline_color", Color("#16201b"))
@@ -58,6 +64,22 @@ func add_player(id: int, player_name: String) -> void:
 	player.add_child(name_label)
 	var label_size: Vector2 = name_label.get_minimum_size()
 	name_label.position = Vector2(-label_size.x / 2.0, -16.0 - label_size.y)
+
+	var hp_bg: Polygon2D = Polygon2D.new()
+	hp_bg.name = "HpBg"
+	hp_bg.polygon = PackedVector2Array([
+		Vector2(-14, -14), Vector2(14, -14), Vector2(14, -10), Vector2(-14, -10)
+	])
+	hp_bg.color = HP_BG_COLOR
+	player.add_child(hp_bg)
+
+	var hp_fill: Polygon2D = Polygon2D.new()
+	hp_fill.name = "HpFill"
+	hp_fill.polygon = PackedVector2Array([
+		Vector2(-14, -14), Vector2(14, -14), Vector2(14, -10), Vector2(-14, -10)
+	])
+	hp_fill.color = HP_FILL_COLOR
+	player.add_child(hp_fill)
 
 	if id == local_id:
 		_camera = Camera2D.new()
@@ -78,7 +100,14 @@ func remove_player(id: int) -> void:
 	_latest_positions.erase(id)
 
 
-func apply_snapshot(tick: int, positions: Dictionary, monsters_data: Array = [], npcs_data: Array = []) -> void:
+func apply_snapshot(
+	tick: int,
+	positions: Dictionary,
+	monsters_data: Array = [],
+	npcs_data: Array = [],
+	player_meta: Dictionary = {},
+	combat_events: Array = []
+) -> void:
 	if tick <= _latest_tick:
 		return
 
@@ -86,9 +115,13 @@ func apply_snapshot(tick: int, positions: Dictionary, monsters_data: Array = [],
 	_latest_tick = tick
 	_snapshot_time_us = Time.get_ticks_usec()
 
-	# 1. Cập nhật vị trí người chơi
+	# 1. Cập nhật vị trí và thông số người chơi
 	_previous_positions = _latest_positions
 	_latest_positions = positions
+
+	for p_id: int in player_meta:
+		if _players.has(p_id):
+			_update_player_meta(_players[p_id], player_meta[p_id])
 
 	# 2. Cập nhật quái vật
 	_previous_monster_positions = _latest_monster_positions
@@ -138,8 +171,68 @@ func apply_snapshot(tick: int, positions: Dictionary, monsters_data: Array = [],
 		_remove_npc(n_id)
 	_latest_npc_positions = new_npc_positions
 
+	# 4. Hiển thị chữ số sát thương nhảy (floating combat text)
+	for ev: Variant in combat_events:
+		if ev is Dictionary:
+			_spawn_floating_damage(ev)
 
-func _process(_delta: float) -> void:
+
+func _update_player_meta(player: Node2D, meta: Dictionary) -> void:
+	var hp: int = meta.get("hp", 100)
+	var max_hp: int = meta.get("max_hp", 100)
+	var level: int = meta.get("level", 1)
+
+	var hp_fill: Polygon2D = player.get_node_or_null("HpFill")
+	if hp_fill != null:
+		var ratio: float = clampf(float(hp) / float(maxi(1, max_hp)), 0.0, 1.0)
+		var right_x: float = -14.0 + 28.0 * ratio
+		hp_fill.polygon = PackedVector2Array([
+			Vector2(-14, -14), Vector2(right_x, -14), Vector2(right_x, -10), Vector2(-14, -10)
+		])
+
+	var name_label: Label = player.get_node_or_null("NameLabel")
+	if name_label != null:
+		if not name_label.text.begins_with("[Lv."):
+			name_label.text = "[Lv.%d] %s" % [level, name_label.text]
+
+
+func _spawn_floating_damage(event: Dictionary) -> void:
+	var target_id: int = event.get("target_id", 0)
+	var damage: int = event.get("damage", 0)
+	var is_crit: bool = event.get("is_crit", false)
+
+	var spawn_pos: Vector2 = Vector2.ZERO
+	if _monsters.has(target_id):
+		spawn_pos = _monsters[target_id].position
+	elif _players.has(target_id):
+		spawn_pos = _players[target_id].position
+	else:
+		return
+
+	var label: Label = Label.new()
+	label.text = "-%d" % damage
+	if is_crit:
+		label.text += "!"
+		label.add_theme_color_override("font_color", Color("#ffd43b"))
+		label.add_theme_font_size_override("font_size", 16)
+	else:
+		label.add_theme_color_override("font_color", Color("#ff6b6b"))
+		label.add_theme_font_size_override("font_size", 13)
+
+	label.add_theme_color_override("font_outline_color", Color("#16201b"))
+	label.add_theme_constant_override("outline_size", 4)
+	add_child(label)
+	label.position = spawn_pos + Vector2(-12.0, -36.0)
+
+	_floating_texts.append({
+		"label": label,
+		"pos": label.position,
+		"life": 0.8,
+		"total_life": 0.8,
+	})
+
+
+func _process(delta: float) -> void:
 	var weight: float = _interpolation_weight()
 	for id: int in _players:
 		_update_player(id, _players[id], weight)
@@ -147,6 +240,20 @@ func _process(_delta: float) -> void:
 		_update_monster(id, _monsters[id], weight)
 	for id: int in _npcs:
 		_update_npc(id, _npcs[id], weight)
+
+	# Cập nhật số nhảy sát thương
+	var remaining_texts: Array[Dictionary] = []
+	for item: Dictionary in _floating_texts:
+		item["life"] -= delta
+		var label: Label = item["label"]
+		if item["life"] <= 0.0:
+			label.queue_free()
+		else:
+			var progress: float = 1.0 - (item["life"] / item["total_life"])
+			label.position = item["pos"] + Vector2(0.0, -20.0 * progress)
+			label.modulate.a = clampf(item["life"] / 0.3, 0.0, 1.0)
+			remaining_texts.append(item)
+	_floating_texts = remaining_texts
 
 
 func _interpolation_weight() -> float:
@@ -188,6 +295,16 @@ func _add_monster(id: int, data: Dictionary) -> void:
 		])
 		body.color = GOBLIN_COLOR
 	monster.add_child(body)
+
+	var target_ring: Polygon2D = Polygon2D.new()
+	target_ring.name = "TargetRing"
+	target_ring.polygon = PackedVector2Array([
+		Vector2(-16, 0), Vector2(-11, -11), Vector2(0, -16), Vector2(11, -11),
+		Vector2(16, 0), Vector2(11, 11), Vector2(0, 16), Vector2(-11, 11)
+	])
+	target_ring.color = Color(1.0, 0.2, 0.2, 0.6)
+	target_ring.hide()
+	monster.add_child(target_ring)
 
 	var name_label: Label = Label.new()
 	name_label.name = "NameLabel"
@@ -271,6 +388,11 @@ func _update_monster_data(monster: Node2D, data: Dictionary) -> void:
 		else:
 			body.modulate = Color.WHITE
 
+	var target_ring: Polygon2D = monster.get_node_or_null("TargetRing")
+	if target_ring != null:
+		var m_id: int = int(data.get("id", 0))
+		target_ring.visible = (selected_target_id == m_id and state != "Dead")
+
 
 func _update_monster(id: int, monster: Node2D, weight: float) -> void:
 	if not _latest_monster_positions.has(id):
@@ -290,6 +412,8 @@ func _remove_monster(id: int) -> void:
 	_monsters.erase(id)
 	_previous_monster_positions.erase(id)
 	_latest_monster_positions.erase(id)
+	if selected_target_id == id:
+		selected_target_id = 0
 
 
 func _add_npc(id: int, data: Dictionary) -> void:
@@ -361,9 +485,27 @@ func _remove_npc(id: int) -> void:
 	_latest_npc_positions.erase(id)
 
 
+func get_nearest_monster(max_range: float = 60.0) -> int:
+	var local_player: Node2D = _players.get(local_id)
+	if local_player == null:
+		return 0
+
+	var my_pos: Vector2 = local_player.position
+	var nearest_id: int = 0
+	var nearest_dist: float = max_range
+
+	for m_id: int in _monsters:
+		var monster: Node2D = _monsters[m_id]
+		var dist: float = my_pos.distance_to(monster.position)
+		if dist <= nearest_dist:
+			nearest_dist = dist
+			nearest_id = m_id
+
+	return nearest_id
+
+
 func _draw() -> void:
 	for row: int in range(ceili(float(MAP_SIZE.y) / TILE_SIZE)):
 		for column: int in range(ceili(float(MAP_SIZE.x) / TILE_SIZE)):
 			var tile: Rect2 = Rect2(column * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
 			draw_rect(tile, TILE_COLORS[(row + column) % 2])
-

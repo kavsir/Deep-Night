@@ -28,9 +28,49 @@ static func decode(text: String) -> Dictionary:
 		"PlayerLeft":
 			if _is_uint(packet.get("id")):
 				return packet
+		"PlayerStats":
+			if (
+				_is_uint(packet.get("level"))
+				and _is_uint(packet.get("exp"))
+				and _is_uint(packet.get("max_exp"))
+				and _is_int(packet.get("hp"))
+				and _is_int(packet.get("max_hp"))
+				and _is_int(packet.get("attack_power"))
+				and _is_int(packet.get("defense"))
+			):
+				return {
+					"type": "PlayerStats",
+					"level": int(packet["level"]),
+					"exp": int(packet["exp"]),
+					"max_exp": int(packet["max_exp"]),
+					"hp": int(packet["hp"]),
+					"max_hp": int(packet["max_hp"]),
+					"attack_power": int(packet["attack_power"]),
+					"defense": int(packet["defense"]),
+				}
+		"Inventory":
+			if packet.get("slots") is Array:
+				var slots: Array[Dictionary] = []
+				for item: Variant in packet["slots"]:
+					if (
+						item is Dictionary
+						and _is_uint(item.get("slot"), 19)
+						and item.get("item_id") is String
+						and _is_uint(item.get("count"), 999)
+					):
+						slots.append({
+							"slot": int(item["slot"]),
+							"item_id": item["item_id"],
+							"count": int(item["count"]),
+						})
+				return {
+					"type": "Inventory",
+					"slots": slots,
+				}
 		"Snapshot":
 			if _is_uint(packet.get("tick")) and packet.get("players") is Array:
 				var positions: Dictionary = {}
+				var player_meta: Dictionary = {}
 				for player: Variant in packet["players"]:
 					if (
 						not player is Dictionary
@@ -41,7 +81,13 @@ static func decode(text: String) -> Dictionary:
 					):
 						push_warning("Bỏ qua Snapshot có dữ liệu người chơi không hợp lệ.")
 						return {}
-					positions[int(player["id"])] = Vector2(player["x"], player["y"])
+					var p_id: int = int(player["id"])
+					positions[p_id] = Vector2(player["x"], player["y"])
+					player_meta[p_id] = {
+						"hp": int(player.get("hp", 100)),
+						"max_hp": int(player.get("max_hp", 100)),
+						"level": int(player.get("level", 1)),
+					}
 
 				var monsters: Array[Dictionary] = []
 				if packet.get("monsters") is Array:
@@ -91,12 +137,32 @@ static func decode(text: String) -> Dictionary:
 							"state": npc["state"],
 						})
 
+				var combat_events: Array[Dictionary] = []
+				if packet.get("combat_events") is Array:
+					for ev: Variant in packet["combat_events"]:
+						if (
+							ev is Dictionary
+							and _is_uint(ev.get("attacker_id"))
+							and _is_uint(ev.get("target_id"))
+							and _is_int(ev.get("damage"))
+							and _is_int(ev.get("target_hp"))
+						):
+							combat_events.append({
+								"attacker_id": int(ev["attacker_id"]),
+								"target_id": int(ev["target_id"]),
+								"damage": int(ev["damage"]),
+								"is_crit": bool(ev.get("is_crit", false)),
+								"target_hp": int(ev["target_hp"]),
+							})
+
 				return {
 					"type": "Snapshot",
 					"tick": int(packet["tick"]),
 					"positions": positions,
+					"player_meta": player_meta,
 					"monsters": monsters,
 					"npcs": npcs,
+					"combat_events": combat_events,
 				}
 		"Error":
 			if packet.get("message") is String:

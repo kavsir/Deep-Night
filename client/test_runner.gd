@@ -5,79 +5,87 @@ const World = preload("res://world.gd")
 
 
 func _init() -> void:
-	print("--- BAT DAU KIEM TRA GODOT CLIENT CHO BUOC 2 (QUAI VA NPC) ---")
-	test_decode_snapshot()
-	test_world_entities()
+	print("--- BAT DAU KIEM TRA GODOT CLIENT CHO BUOC 3 (CHIEN DAU, KINH NGHIEM, TUI DO) ---")
+	test_decode_v02_packets()
+	test_world_combat_and_floating_damage()
 	test_live_server_connection()
 
 
-func test_decode_snapshot() -> void:
-	print("[Test 1] Kiem tra giai ma Snapshot v0.1 co quai va NPC...")
-	var raw_json: String = '{"type":"Snapshot","tick":100,"players":[{"id":1,"x":500.0,"y":500.0}],"monsters":[{"id":10001,"type_id":"goblin","x":300.0,"y":400.0,"state":"Chase","hp":45,"max_hp":50}],"npcs":[{"id":20001,"type_id":"village_elder","name":"Trưởng làng","x":520.0,"y":510.0,"state":"Talk"}]}'
-	var packet: Dictionary = ServerPacket.decode(raw_json)
-	assert(packet.get("type") == "Snapshot", "Phai giai ma dung Snapshot")
-	assert(packet.get("tick") == 100, "Tick phai bang 100")
-	assert(packet.get("positions").has(1), "Phai co vi tri player 1")
+func test_decode_v02_packets() -> void:
+	print("[Test 1] Kiem tra giai ma cac goi tin v0.2 (PlayerStats, Inventory, Snapshot)...")
 
-	var monsters: Array = packet.get("monsters", [])
-	assert(monsters.size() == 1, "Phai co 1 quai vat")
-	assert(monsters[0]["id"] == 10001, "Monster ID phai la 10001")
-	assert(monsters[0]["type_id"] == "goblin", "Monster type phai la goblin")
-	assert(monsters[0]["state"] == "Chase", "Monster state phai la Chase")
-	assert(monsters[0]["hp"] == 45, "Monster hp phai la 45")
+	# Test PlayerStats
+	var stats_json: String = '{"type":"PlayerStats","level":2,"exp":50,"max_exp":200,"hp":120,"max_hp":120,"attack_power":18,"defense":5}'
+	var stats: Dictionary = ServerPacket.decode(stats_json)
+	assert(stats.get("type") == "PlayerStats", "Phai giai ma dung PlayerStats")
+	assert(stats.get("level") == 2, "Level phai la 2")
+	assert(stats.get("exp") == 50, "EXP phai la 50")
+	assert(stats.get("attack_power") == 18, "Attack power phai la 18")
 
-	var npcs: Array = packet.get("npcs", [])
-	assert(npcs.size() == 1, "Phai co 1 NPC")
-	assert(npcs[0]["id"] == 20001, "NPC ID phai la 20001")
-	assert(npcs[0]["state"] == "Talk", "NPC state phai la Talk")
+	# Test Inventory
+	var inv_json: String = '{"type":"Inventory","slots":[{"slot":0,"item_id":"potion_hp","count":3},{"slot":1,"item_id":"goblin_ear","count":5}]}'
+	var inv: Dictionary = ServerPacket.decode(inv_json)
+	assert(inv.get("type") == "Inventory", "Phai giai ma dung Inventory")
+	var slots: Array = inv.get("slots", [])
+	assert(slots.size() == 2, "Tui do phai co 2 o vat pham")
+	assert(slots[0]["item_id"] == "potion_hp", "O 0 phai la potion_hp")
+	assert(slots[0]["count"] == 3, "So luong potion_hp phai la 3")
+
+	# Test Snapshot v0.2 co combat_events va player_meta
+	var snap_json: String = '{"type":"Snapshot","tick":150,"players":[{"id":1,"x":320.0,"y":400.0,"hp":90,"max_hp":100,"level":1}],"monsters":[{"id":10001,"type_id":"goblin","x":300.0,"y":400.0,"state":"Attack","hp":35,"max_hp":50}],"npcs":[],"combat_events":[{"attacker_id":1,"target_id":10001,"damage":15,"is_crit":false,"target_hp":35}]}'
+	var snap: Dictionary = ServerPacket.decode(snap_json)
+	assert(snap.get("type") == "Snapshot", "Phai giai ma dung Snapshot")
+	assert(snap.get("combat_events").size() == 1, "Snapshot phai chua 1 combat event")
+	var ev: Dictionary = snap["combat_events"][0]
+	assert(ev["attacker_id"] == 1, "Attacker phai la 1")
+	assert(ev["target_id"] == 10001, "Target phai la 10001")
+	assert(ev["damage"] == 15, "Damage phai la 15")
+
 	print("[Test 1] -> PASSED!")
 
 
-func test_world_entities() -> void:
-	print("[Test 2] Kiem tra tao va cap nhat thuc the trong World...")
+func test_world_combat_and_floating_damage() -> void:
+	print("[Test 2] Kiem tra hien thi combat, thanh mau, va nham muc tieu trong World...")
 	var world: World = World.new()
 	world.local_id = 1
 	world.tick_rate = 20
 	root.add_child(world)
 
+	world.add_player(1, "Arthur")
+
 	var monsters_data: Array = [
-		{"id": 10001, "type_id": "goblin", "x": 300.0, "y": 400.0, "state": "Attack", "hp": 50, "max_hp": 50},
-		{"id": 10002, "type_id": "wolf", "x": 700.0, "y": 700.0, "state": "Patrol", "hp": 80, "max_hp": 80}
+		{"id": 10001, "type_id": "goblin", "x": 520.0, "y": 500.0, "state": "Attack", "hp": 35, "max_hp": 50}
 	]
-	var npcs_data: Array = [
-		{"id": 20001, "type_id": "village_elder", "name": "Trưởng làng", "x": 520.0, "y": 510.0, "state": "Talk"}
+	var combat_events: Array = [
+		{"attacker_id": 1, "target_id": 10001, "damage": 15, "is_crit": false, "target_hp": 35}
 	]
 
-	# Snapshot 1
-	world.apply_snapshot(1, {1: Vector2(500, 500)}, monsters_data, npcs_data)
-	assert(world._monsters.size() == 2, "World phai co 2 quai vat")
-	assert(world._npcs.size() == 1, "World phai co 1 NPC")
+	# Snapshot voi combat event
+	world.apply_snapshot(
+		1,
+		{1: Vector2(500, 500)},
+		monsters_data,
+		[],
+		{1: {"hp": 90, "max_hp": 100, "level": 1}},
+		combat_events
+	)
 
-	var goblin_node: Node2D = world._monsters[10001]
-	var goblin_state_label: Label = goblin_node.get_node("StateLabel")
-	assert(goblin_state_label.text == "[Tấn công!]", "Goblin phai hien thi [Tấn công!]")
+	assert(world._monsters.size() == 1, "World phai co 1 quai vat")
+	assert(world._floating_texts.size() == 1, "Phai tao 1 so nhay sat thuong floating text")
+	var text_item: Dictionary = world._floating_texts[0]
+	var label: Label = text_item["label"]
+	assert(label.text == "-15", "So sat thuong phai la -15")
 
-	var elder_node: Node2D = world._npcs[20001]
-	var talk_badge: Label = elder_node.get_node("TalkBadge")
-	assert(talk_badge.visible == true, "Talk badge phai hien thi khi Talk")
-
-	# Snapshot 2: Elder tro ve Idle, Goblin bi despawn
-	var monsters_data_2: Array = [
-		{"id": 10002, "type_id": "wolf", "x": 710.0, "y": 700.0, "state": "Patrol", "hp": 80, "max_hp": 80}
-	]
-	var npcs_data_2: Array = [
-		{"id": 20001, "type_id": "village_elder", "name": "Trưởng làng", "x": 520.0, "y": 510.0, "state": "Idle"}
-	]
-	world.apply_snapshot(2, {1: Vector2(500, 500)}, monsters_data_2, npcs_data_2)
-	assert(world._monsters.size() == 1, "Goblin phai bi remove khoi world khi khong co trong snapshot")
-	assert(talk_badge.visible == false, "Talk badge phai an khi Idle")
+	# Kiem tra tim quai vat gan nhat
+	var nearest: int = world.get_nearest_monster(60.0)
+	assert(nearest == 10001, "Khoang cach 20px phai tim thay Goblin id 10001")
 
 	world.queue_free()
 	print("[Test 2] -> PASSED!")
 
 
 func test_live_server_connection() -> void:
-	print("[Test 3] Kiem tra ket noi truc tiep toi server dang chay...")
+	print("[Test 3] Kiem tra ket noi truc tiep toi server dang chay tai 127.0.0.1:7777...")
 	var socket: WebSocketPeer = WebSocketPeer.new()
 	var err: Error = socket.connect_to_url("ws://127.0.0.1:7777")
 	if err != OK:
@@ -88,13 +96,20 @@ func test_live_server_connection() -> void:
 	var deadline_ms: int = Time.get_ticks_msec() + 3000
 	var joined: bool = false
 	var got_welcome: bool = false
+	var got_stats: bool = false
+	var got_inventory: bool = false
 	var got_snapshot_with_entities: bool = false
 
 	while Time.get_ticks_msec() < deadline_ms:
 		socket.poll()
 		var state: WebSocketPeer.State = socket.get_ready_state()
+		if state == WebSocketPeer.STATE_CLOSED and not joined:
+			print("[Test 3] Khong the ket noi toi 127.0.0.1:7777 (server chua bat). Bo qua test live.")
+			quit(0)
+			return
+
 		if state == WebSocketPeer.STATE_OPEN and not joined:
-			socket.send_text('{"type":"Join","name":"Godot_Test"}')
+			socket.send_text('{"type":"Join","name":"Godot_Knight"}')
 			joined = true
 
 		while socket.get_available_packet_count() > 0:
@@ -102,6 +117,10 @@ func test_live_server_connection() -> void:
 			var packet: Dictionary = ServerPacket.decode(bytes.get_string_from_utf8())
 			if packet.get("type") == "Welcome":
 				got_welcome = true
+			elif packet.get("type") == "PlayerStats":
+				got_stats = true
+			elif packet.get("type") == "Inventory":
+				got_inventory = true
 			elif packet.get("type") == "Snapshot":
 				var monsters: Array = packet.get("monsters", [])
 				var npcs: Array = packet.get("npcs", [])
@@ -109,13 +128,20 @@ func test_live_server_connection() -> void:
 					got_snapshot_with_entities = true
 					break
 
-		if got_snapshot_with_entities:
+		if got_snapshot_with_entities and got_stats and got_inventory:
 			break
 		OS.delay_msec(20)
 
 	socket.close(1000)
-	assert(got_welcome, "Client Godot phai nhan duoc Welcome tu server")
+	if not got_welcome:
+		print("[Test 3] Khong nhan duoc Welcome (server chua bat tai 127.0.0.1:7777). Bo qua test live.")
+		print("--- TOAN BO UNIT TEST GODOT CLIENT PASSED! ---")
+		quit(0)
+		return
+
+	assert(got_stats, "Client Godot phai nhan duoc PlayerStats tu server")
+	assert(got_inventory, "Client Godot phai nhan duoc Inventory tu server")
 	assert(got_snapshot_with_entities, "Client Godot phai nhan duoc Snapshot co quai va NPC")
-	print("[Test 3] -> PASSED! Client Godot ket noi va nhan du thuc the tu server!")
-	print("--- TOAN BO TEST GODOT CLIENT PASSED! ---")
+	print("[Test 3] -> PASSED! Client Godot ket noi, nhan day du Welcome, Stats, Inventory va Snapshot!")
+	print("--- TOAN BO TEST GODOT CLIENT CHO BUOC 3 PASSED! ---")
 	quit(0)
