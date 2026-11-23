@@ -1,6 +1,6 @@
 # Giao thức Mạng (PROTOCOL) - Mini-MMORPG 2D
 
-Phiên bản: **v0.1** (Đề xuất Bước 3: Quái và NPC)  
+Phiên bản: **v0.2** (Đề xuất Bước 3: Chiến đấu, Kinh nghiệm, Túi đồ)  
 Nguồn sự thật duy nhất cho việc giao tiếp giữa Client và Server.
 
 ---
@@ -10,8 +10,8 @@ Nguồn sự thật duy nhất cho việc giao tiếp giữa Client và Server.
 - **Tầng vận chuyển (Transport)**: WebSocket (`ws://` hoặc `wss://`).
 - **Định dạng dữ liệu (Data Format)**: JSON (text frame), mã hóa UTF-8.
 - **Phân biệt loại gói tin (Message Tagging)**: Dùng trường `"type"` ở cấp gốc của mỗi đối tượng JSON (tương ứng `#[serde(tag = "type")]` trong Rust).
-- **Số phiên bản giao thức**: `v0.1`.
-- **Nguyên tắc cốt lõi**: **SERVER AUTHORITATIVE**. Server nắm toàn quyền quyết định logic, trạng thái, vị trí thế giới, quái vật, NPC và AI. Client chỉ gửi input (ý định) và nhận snapshot để render.
+- **Số phiên bản giao thức**: `v0.2`.
+- **Nguyên tắc cốt lõi**: **SERVER AUTHORITATIVE**. Server nắm toàn quyền quyết định logic, trạng thái, vị trí thế giới, quái vật, NPC, tính toán sát thương, kinh nghiệm, túi đồ và tỷ lệ rơi đồ. Client chỉ gửi input (ý định) và nhận snapshot/stats để render.
 - **Đóng kết nối**: Khi từ chối kết nối hoặc đóng phiên do lỗi (ví dụ: trùng tên, gói quá lớn, vi phạm rate limit), server gửi gói `Error` VÀ truyền mã Close (mã `1008 Policy Violation` hoặc `1000 Normal Closure`) kèm lý do bằng chuỗi UTF-8 trong khung Close của WebSocket để client Godot đọc được ngay lập tức.
 
 ---
@@ -53,6 +53,47 @@ Gửi ý định di chuyển của người chơi đến server.
     "seq": 105,
     "dx": 1,
     "dy": 0
+  }
+  ```
+
+### 2.3. `Attack` (v0.2)
+Gửi ý định tấn công một mục tiêu (quái vật) từ người chơi.
+
+- **Các trường**:
+  - `type`: `"Attack"` (bắt buộc)
+  - `seq`: `integer` (`u64`) - Số thứ tự gói tin để chống gửi trùng lặp.
+  - `target_id`: `integer` (`u64`) - Mã định danh của quái vật muốn tấn công.
+- **Quy tắc tính hợp lệ**:
+  - `target_id` phải tồn tại trong danh sách quái đang sống trên server (`hp > 0`, state khác `"Dead"`).
+  - Khoảng cách từ vị trí người chơi tới quái vật phải $\le$ `PLAYER_ATTACK_RANGE` (60.0px).
+  - Tuân thủ thời gian hồi chiêu đòn đánh `PLAYER_ATTACK_COOLDOWN` (0.6 giây, tức tối đa ~1.67 đòn/giây). Nếu gửi nhanh hơn sẽ bị server bỏ qua.
+  - Người chơi phải đang sống (`hp > 0`).
+- **Ví dụ**:
+  ```json
+  {
+    "type": "Attack",
+    "seq": 106,
+    "target_id": 10001
+  }
+  ```
+
+### 2.4. `UseItem` (v0.2)
+Yêu cầu sử dụng một vật phẩm tiêu hao trong túi đồ.
+
+- **Các trường**:
+  - `type`: `"UseItem"` (bắt buộc)
+  - `slot`: `integer` (`u32`) - Vị trí ô trong túi đồ muốn sử dụng (dải từ `0` đến `19`).
+- **Quy tắc tính hợp lệ**:
+  - `slot` phải nằm trong khoảng `[0, MAX_INVENTORY_SLOTS - 1]`.
+  - Ô đồ phải có vật phẩm và số lượng $> 0$.
+  - Vật phẩm phải thuộc loại có thể sử dụng (ví dụ: `consumable` như `"potion_hp"`).
+  - Tuân thủ thời gian hồi chiêu dùng vật phẩm `ITEM_USE_COOLDOWN` (1.0 giây).
+  - Người chơi phải đang sống (`hp > 0`).
+- **Ví dụ**:
+  ```json
+  {
+    "type": "UseItem",
+    "slot": 0
   }
   ```
 
@@ -114,10 +155,13 @@ Thông báo khi một người chơi thoát khỏi thế giới / ngắt kết n
 - **Các trường**:
   - `type`: `"Snapshot"` (bắt buộc)
   - `tick`: `integer` (`u64`) - Số thứ tự tick hiện tại của server.
-  - `players`: `array` - Danh sách vị trí của tất cả người chơi đang kết nối:
+  - `players`: `array` - Danh sách trạng thái của tất cả người chơi đang kết nối:
     - `id`: `integer` (`u64`) - ID người chơi (dải 1 .. 9999).
     - `x`: `number` (`f32`) - Tọa độ X trên bản đồ.
     - `y`: `number` (`f32`) - Tọa độ Y trên bản đồ.
+    - `hp`: `integer` (`i32`) - (v0.2) Máu hiện tại của người chơi.
+    - `max_hp`: `integer` (`i32`) - (v0.2) Máu tối đa của người chơi.
+    - `level`: `integer` (`u32`) - (v0.2) Cấp độ của người chơi.
   - `monsters`: `array` - Danh sách quái vật đang hiện diện trên bản đồ:
     - `id`: `integer` (`u64`) - ID định danh thực thể quái (duy nhất, dải >= 10000, ổn định từ khi sinh ra tới khi chết).
     - `type_id`: `string` - Mã loại quái (ví dụ: `"goblin"`, `"wolf"`, ánh xạ tới cấu hình `data/monsters.json`).
@@ -133,14 +177,20 @@ Thông báo khi một người chơi thoát khỏi thế giới / ngắt kết n
     - `x`: `number` (`f32`) - Tọa độ X trên bản đồ.
     - `y`: `number` (`f32`) - Tọa độ Y trên bản đồ.
     - `state`: `string` - Trạng thái State Machine hiện tại: `"Idle"`, `"Patrol"`, `"Talk"`.
+  - `combat_events`: `array` - (v0.2, tùy chọn/mặc định rỗng) Danh sách sự kiện đòn đánh xảy ra trong tick này:
+    - `attacker_id`: `integer` (`u64`) - ID bên tấn công (người chơi hoặc quái).
+    - `target_id`: `integer` (`u64`) - ID bên nhận sát thương.
+    - `damage`: `integer` (`i32`) - Lượng sát thương gây ra.
+    - `is_crit`: `boolean` - Đòn đánh chí mạng hay không.
+    - `target_hp`: `integer` (`i32`) - Máu còn lại của mục tiêu sau đòn đánh.
 - **Ví dụ**:
   ```json
   {
     "type": "Snapshot",
     "tick": 240,
     "players": [
-      { "id": 1, "x": 120.5, "y": 85.0 },
-      { "id": 2, "x": 150.0, "y": 92.5 }
+      { "id": 1, "x": 120.5, "y": 85.0, "hp": 100, "max_hp": 100, "level": 1 },
+      { "id": 2, "x": 150.0, "y": 92.5, "hp": 85, "max_hp": 100, "level": 1 }
     ],
     "monsters": [
       {
@@ -157,10 +207,19 @@ Thông báo khi một người chơi thoát khỏi thế giới / ngắt kết n
       {
         "id": 20001,
         "type_id": "village_elder",
-        "name": "Trưởng làng",
+        "name": "Trưởng làng Galahad",
         "x": 520.0,
         "y": 510.0,
         "state": "Idle"
+      }
+    ],
+    "combat_events": [
+      {
+        "attacker_id": 1,
+        "target_id": 10001,
+        "damage": 15,
+        "is_crit": false,
+        "target_hp": 35
       }
     ]
   }
@@ -196,7 +255,53 @@ Mỗi quái vật chạy một Finite State Machine độc lập trên server t�
 - **`Patrol`**: Di chuyển tuần tra qua lại giữa các điểm waypoint cố định được cấu hình trong `data/npcs.json`.
 - **`Talk`**: Khi có người chơi đứng trong phạm vi tương tác (khoảng cách < 40px), NPC quay mặt về phía người chơi và chuyển sang `Talk`. Khi người chơi rời đi, NPC quay lại `Idle` hoặc tiếp tục `Patrol`.
 
-### 3.5. `Error`
+### 3.5. `PlayerStats` (v0.2)
+Gói tin cập nhật bảng thuộc tính chi tiết gửi riêng cho client người chơi khi tham gia (`Welcome`) hoặc khi chỉ số thay đổi (nhận kinh nghiệm, lên cấp, thay đổi trang bị).
+
+- **Các trường**:
+  - `type`: `"PlayerStats"` (bắt buộc)
+  - `level`: `integer` (`u32`) - Cấp độ hiện tại.
+  - `exp`: `integer` (`u64`) - Điểm kinh nghiệm hiện có.
+  - `max_exp`: `integer` (`u64`) - Điểm kinh nghiệm cần để lên cấp tiếp theo.
+  - `hp`: `integer` (`i32`) - Máu hiện tại.
+  - `max_hp`: `integer` (`i32`) - Máu tối đa.
+  - `attack_power`: `integer` (`i32`) - Sức tấn công vật lý cơ bản.
+  - `defense`: `integer` (`i32`) - Điểm phòng thủ giảm sát thương.
+- **Ví dụ**:
+  ```json
+  {
+    "type": "PlayerStats",
+    "level": 2,
+    "exp": 120,
+    "max_exp": 200,
+    "hp": 120,
+    "max_hp": 120,
+    "attack_power": 18,
+    "defense": 5
+  }
+  ```
+
+### 3.6. `Inventory` (v0.2)
+Gói tin gửi toàn bộ danh sách vật phẩm trong túi đồ của người chơi khi tham gia thế giới hoặc khi có biến động túi đồ (nhặt vật phẩm rơi từ quái, sử dụng bình máu, vứt bỏ).
+
+- **Các trường**:
+  - `type`: `"Inventory"` (bắt buộc)
+  - `slots`: `array` - Danh sách các ô đồ đang có vật phẩm:
+    - `slot`: `integer` (`u32`) - Chỉ số ô đồ từ `0` đến `19` (`MAX_INVENTORY_SLOTS = 20`).
+    - `item_id`: `string` - Mã định danh vật phẩm (ví dụ: `"potion_hp"`, `"goblin_ear"`).
+    - `count`: `integer` (`u32`) - Số lượng vật phẩm trong ô đó.
+- **Ví dụ**:
+  ```json
+  {
+    "type": "Inventory",
+    "slots": [
+      { "slot": 0, "item_id": "potion_hp", "count": 5 },
+      { "slot": 1, "item_id": "goblin_ear", "count": 3 }
+    ]
+  }
+  ```
+
+### 3.7. `Error`
 Thông báo lỗi từ server gửi tới client (ví dụ: dữ liệu không hợp lệ, lỗi đăng nhập).
 
 - **Các trường**:
@@ -212,6 +317,51 @@ Thông báo lỗi từ server gửi tới client (ví dụ: dữ liệu không h
 
 ---
 
+### 3.8. Đặc tả Cơ chế Chiến đấu, Kinh nghiệm & Túi đồ (v0.2)
+
+1. **Cơ chế Tấn công & Sát thương (Combat)**:
+   - **Người chơi tấn công quái vật**:
+     - Client gửi gói `Attack { seq, target_id }`.
+     - Server kiểm tra: `target_id` tồn tại, khoảng cách tới quái $\le$ `PLAYER_ATTACK_RANGE` (60px), và người chơi không trong thời gian hồi đòn `PLAYER_ATTACK_COOLDOWN` (0.6s).
+     - Công thức sát thương: $\text{damage} = \max(1, \text{attack\_power} \pm \text{variance})$.
+     - Quái vật bị trừ máu và lập tức chuyển FSM sang trạng thái `Chase` hoặc `Attack` nhắm vào người chơi vừa đánh.
+     - Sinh sự kiện `CombatEvent` đưa vào `Snapshot` tick đó để client hiển thị số nhảy sát thương.
+   - **Quái vật tấn công người chơi**:
+     - Khi quái ở FSM `Attack` và cự ly $\le \text{attack\_range}$, mỗi chu kỳ 1.0 giây quái gây sát thương lên người chơi mục tiêu: $\text{damage} = \max(1, \text{monster\_attack} - \text{defense})$.
+     - Sinh `CombatEvent` đưa vào `Snapshot`.
+   - **Người chơi tử vong & Hồi sinh**:
+     - Khi người chơi bị đánh cạn máu (`hp <= 0`): Người chơi chuyển sang trạng thái bất động trong 3 giây.
+     - Sau 3 giây, server hồi sinh người chơi tại tọa độ mặc định (`SPAWN_X`, `SPAWN_Y`) với 100% máu.
+
+2. **Cơ chế Kinh nghiệm & Thăng cấp (EXP & Leveling)**:
+   - Khi quái vật bị hạ gục (`hp <= 0`): Người chơi kết liễu quái vật nhận được điểm kinh nghiệm tương ứng với loại quái (`goblin`: 25 EXP, `wolf`: 50 EXP).
+   - Công thức EXP lên cấp: $\text{max\_exp} = \text{level} \times 100$.
+   - Khi $\text{exp} \ge \text{max\_exp}$:
+     - Cấp độ `level` tăng 1.
+     - Trừ lượng EXP đã đạt: $\text{exp} = \text{exp} - \text{max\_exp}$.
+     - Tăng chỉ số: `max_hp` tăng thêm $+20$, `attack_power` tăng thêm $+3$.
+     - Hồi phục đầy đủ 100% máu hiện tại.
+     - Server phát gói `PlayerStats` mới tới client.
+
+3. **Cơ chế Túi đồ & Rơi vật phẩm (Inventory & Drops)**:
+   - Mỗi người chơi sở hữu túi đồ gồm `MAX_INVENTORY_SLOTS = 20` ô (đánh số từ `0` đến `19`).
+   - Khi quái chết, server tính toán tỷ lệ rơi đồ theo bảng cấu hình trong `data/items.json`:
+     - Yêu tinh (Goblin): 60% rơi 1 `potion_hp`, 80% rơi 1 `goblin_ear`.
+     - Sói xám (Wolf): 50% rơi 1 `potion_hp`, 90% rơi 1 `wolf_pelt`.
+   - Vật phẩm rơi được đưa trực tiếp vào túi đồ của người chơi:
+     - Ưu tiên cộng dồn (stack) vào ô có sẵn cùng loại vật phẩm (nếu chưa vượt `max_stack`).
+     - Nếu không thể stack, đưa vào ô trống đầu tiên có chỉ số nhỏ nhất.
+     - Nếu túi đồ đầy cả 20 ô: vật phẩm bị bỏ qua (thông báo túi đầy).
+   - Server gửi gói `Inventory` cập nhật tới client.
+   - Khi người chơi gửi gói `UseItem { slot }`:
+     - Nếu vật phẩm tại ô đó là `"potion_hp"`: Hồi 40 HP (không vượt quá `max_hp`), trừ 1 số lượng vật phẩm. Nếu số lượng về 0, giải phóng ô đồ.
+     - Cooldown giữa 2 lần dùng vật phẩm là `ITEM_USE_COOLDOWN` (1.0 giây).
+     - Gửi cập nhật `Inventory` và `PlayerStats` tới client.
+
+---
+
+---
+
 ## 4. Giới hạn kỹ thuật và Hằng số thế giới (Limits & Constants)
 
 1. **Hằng số thế giới & Di chuyển**:
@@ -224,12 +374,21 @@ Thông báo lỗi từ server gửi tới client (ví dụ: dữ liệu không h
    - `SPAWN_X`: **500.0**
    - `SPAWN_Y`: **500.0**
 
-2. **Kích thước gói tin tối đa (Max Packet Size)**:
+2. **Hằng số Chiến đấu & Túi đồ (v0.2)**:
+   - `PLAYER_ATTACK_RANGE`: **60.0 pixels** (tầm đánh cận chiến của người chơi).
+   - `PLAYER_ATTACK_COOLDOWN`: **0.6 giây** (khoảng thời gian tối thiểu giữa 2 lần ra đòn).
+   - `ITEM_USE_COOLDOWN`: **1.0 giây** (khoảng thời gian tối thiểu giữa 2 lần dùng vật phẩm).
+   - `MAX_INVENTORY_SLOTS`: **20** ô (túi đồ cá nhân).
+   - `RESPAWN_DELAY`: **3.0 giây** (thời gian chờ hồi sinh sau khi tử vong).
+
+3. **Kích thước gói tin tối đa (Max Packet Size)**:
    - Client -> Server: Tối đa **4096 bytes (4 KB)** cho mỗi frame văn bản WebSocket.
    - Bất kỳ frame nào vượt quá giới hạn này sẽ bị hủy bỏ ngay lập tức và server ngắt kết nối client vi phạm.
 
-3. **Tần suất gói tin tối đa (Rate Limit)**:
-   - Gói `Input`: Tối đa **30 gói / giây** cho mỗi client (server chạy ở 20Hz, ngưỡng 30 gói/giây cho phép bù đắp biến thiên độ trễ mạng - network jitter).
+4. **Tần suất gói tin tối đa (Rate Limit)**:
+   - Gói `Input`: Tối đa **30 gói / giây** cho mỗi client.
+   - Gói `Attack`: Tối đa **5 gói / giây** cho mỗi client.
+   - Gói `UseItem`: Tối đa **3 gói / giây** cho mỗi client.
    - Gói `Join`: Tối đa **1 lần** cho mỗi phiên kết nối.
    - Tổng tần suất gói tin từ một client: Không vượt quá **60 gói / giây**.
 
@@ -264,13 +423,20 @@ Server áp dụng triệt để nguyên tắc **Zero Trust** đối với dữ l
 Tất cả nội dung quái và NPC được định nghĩa tĩnh trong thư mục `data/` theo nguyên tắc của AGENTS.md (Server Authoritative):
 
 ### 6.1. `data/monsters.json`
-Định nghĩa danh sách các loại quái và cấu hình spawn:
+Định nghĩa danh sách các loại quái, thuộc tính chiến đấu và cấu hình spawn:
 ```json
 [
   {
     "type_id": "goblin",
     "name": "Yêu tinh",
     "max_hp": 50,
+    "attack_power": 8,
+    "defense": 2,
+    "exp_reward": 25,
+    "drops": [
+      { "item_id": "potion_hp", "chance": 0.6, "min": 1, "max": 1 },
+      { "item_id": "goblin_ear", "chance": 0.8, "min": 1, "max": 1 }
+    ],
     "move_speed": 100.0,
     "chase_speed": 150.0,
     "aggro_radius": 180.0,
@@ -286,6 +452,13 @@ Tất cả nội dung quái và NPC được định nghĩa tĩnh trong thư m�
     "type_id": "wolf",
     "name": "Sói xám",
     "max_hp": 80,
+    "attack_power": 14,
+    "defense": 4,
+    "exp_reward": 50,
+    "drops": [
+      { "item_id": "potion_hp", "chance": 0.5, "min": 1, "max": 1 },
+      { "item_id": "wolf_pelt", "chance": 0.9, "min": 1, "max": 1 }
+    ],
     "move_speed": 120.0,
     "chase_speed": 180.0,
     "aggro_radius": 220.0,
@@ -323,6 +496,37 @@ Tất cả nội dung quái và NPC được định nghĩa tĩnh trong thư m�
       { "x": 450.0, "y": 500.0 },
       { "x": 550.0, "y": 500.0 }
     ]
+  }
+]
+```
+
+### 6.3. `data/items.json` (v0.2)
+Định nghĩa danh mục vật phẩm trong game:
+```json
+[
+  {
+    "id": "potion_hp",
+    "name": "Bình máu nhỏ",
+    "type": "consumable",
+    "heal_amount": 40,
+    "max_stack": 20,
+    "description": "Hồi phục 40 điểm sinh lực khi sử dụng."
+  },
+  {
+    "id": "goblin_ear",
+    "name": "Tai yêu tinh",
+    "type": "material",
+    "heal_amount": 0,
+    "max_stack": 99,
+    "description": "Chiến lợi phẩm từ yêu tinh, có thể bán hoặc dùng làm nhiệm vụ."
+  },
+  {
+    "id": "wolf_pelt",
+    "name": "Da sói xám",
+    "type": "material",
+    "heal_amount": 0,
+    "max_stack": 99,
+    "description": "Bộ da sói dày, có thể bán hoặc dùng chế tạo áo giáp."
   }
 ]
 ```

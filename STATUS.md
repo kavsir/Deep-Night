@@ -1,8 +1,9 @@
 # STATUS
 
 ## Đang làm
-- Bước 2 trong ROADMAP (Quái và NPC State Machine trên server, client hiển thị) đã hoàn tất 100% cả phía Server và Client.
-- Chờ chỉ đạo của con người để chuyển sang Bước 3 (Chiến đấu, kinh nghiệm, túi đồ).
+- Bước 3 trong ROADMAP (Chiến đấu, kinh nghiệm, túi đồ):
+  - Đã soạn thảo đề xuất nâng cấp giao thức `PROTOCOL.md` lên **v0.2** (bổ sung các gói `Attack`, `UseItem`, `PlayerStats`, `Inventory`, mảng `combat_events` trong `Snapshot`, cơ chế tính sát thương, kinh nghiệm, túi đồ 20 ô, cấu hình `data/items.json`).
+  - ĐANG DỪNG LẠI và chờ con người duyệt `PROTOCOL.md` theo đúng quy trình đổi giao thức tại `AGENTS.md`. Chưa viết code server/client ở bước này.
 
 ## Vừa xong
 
