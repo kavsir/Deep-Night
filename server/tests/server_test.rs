@@ -63,12 +63,19 @@ async fn test_join_welcome_and_snapshot() {
     if let Message::Text(text) = snapshot_msg {
         let snapshot = ServerMessage::from_json(&text).unwrap();
         match snapshot {
-            ServerMessage::Snapshot { tick, players } => {
+            ServerMessage::Snapshot {
+                tick,
+                players,
+                monsters,
+                npcs,
+            } => {
                 assert!(tick >= 1);
                 assert_eq!(players.len(), 1);
                 assert_eq!(players[0].id, 1);
                 assert_eq!(players[0].x, SPAWN_X);
                 assert_eq!(players[0].y, SPAWN_Y);
+                assert!(!monsters.is_empty(), "Monsters list should not be empty");
+                assert!(!npcs.is_empty(), "NPCs list should not be empty");
             }
             _ => panic!("Expected Snapshot, got: {:?}", snapshot),
         }
@@ -165,6 +172,11 @@ async fn test_duplicate_name_rejected() {
         }
     } else {
         panic!("Expected text error");
+    }
+
+    // Client 2 cũng nhận được WebSocket Close frame với lý do tương ứng
+    if let Some(Ok(Message::Close(Some(frame)))) = stream2.next().await {
+        assert_eq!(frame.reason, "Ten nguoi choi da ton tai");
     }
 }
 
@@ -310,5 +322,163 @@ async fn test_disconnect_broadcasts_player_left() {
     assert!(
         got_left,
         "Watcher should receive PlayerLeft when Leaver disconnects"
+    );
+}
+
+#[tokio::test]
+async fn test_single_player_monster_aggro_and_leash() {
+    let (url, _shutdown) = spawn_test_server().await;
+    let (ws_stream, _) = connect_async(&url).await.unwrap();
+    let (mut sink, mut stream) = ws_stream.split();
+
+    let join = ClientMessage::Join {
+        name: "Knight_Gareth".to_string(),
+    };
+    sink.send(Message::Text(join.to_json().unwrap().into()))
+        .await
+        .unwrap();
+
+    // Doc Welcome
+    let _ = stream.next().await.unwrap().unwrap();
+
+    // 1. Cho xem Goblin o trang thai Idle hoac Patrol
+    let mut goblin_id = None;
+    for _ in 0..15 {
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(200), stream.next()).await
+        {
+            if let Ok(ServerMessage::Snapshot { monsters, .. }) = ServerMessage::from_json(&text) {
+                if let Some(m) = monsters.iter().find(|m| m.type_id == "goblin") {
+                    goblin_id = Some(m.id);
+                    assert!(m.state == "Idle" || m.state == "Patrol");
+                    break;
+                }
+            }
+        }
+    }
+    let target_goblin_id = goblin_id.expect("Khong tim thay goblin trong snapshot");
+
+    // 2. Nguoi choi di chuyen toi gan Goblin (dx = -1, dy = -1 huong ve 300, 400)
+    let mut seq = 1;
+    let mut saw_chase = false;
+    for _ in 0..40 {
+        let input = ClientMessage::Input {
+            seq,
+            dx: -1,
+            dy: -1,
+        };
+        seq += 1;
+        let _ = sink
+            .send(Message::Text(input.to_json().unwrap().into()))
+            .await;
+
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(100), stream.next()).await
+        {
+            if let Ok(ServerMessage::Snapshot { monsters, .. }) = ServerMessage::from_json(&text) {
+                if let Some(m) = monsters.iter().find(|m| m.id == target_goblin_id) {
+                    if m.state == "Chase" || m.state == "Attack" {
+                        saw_chase = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_chase,
+        "Goblin phai chuyen sang Chase/Attack khi nguoi choi den gan"
+    );
+
+    // 3. Nguoi choi chay xa ra ngoai tam leash (dx = 1, dy = 1 ve phia 800, 800)
+    let mut saw_return = false;
+    for _ in 0..60 {
+        let input = ClientMessage::Input { seq, dx: 1, dy: 1 };
+        seq += 1;
+        let _ = sink
+            .send(Message::Text(input.to_json().unwrap().into()))
+            .await;
+
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(100), stream.next()).await
+        {
+            if let Ok(ServerMessage::Snapshot { monsters, .. }) = ServerMessage::from_json(&text) {
+                if let Some(m) = monsters.iter().find(|m| m.id == target_goblin_id) {
+                    if m.state == "Return" || m.state == "Idle" {
+                        saw_return = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_return,
+        "Goblin phai chuyen sang Return/Idle khi nguoi choi chay ra ngoai leash radius"
+    );
+}
+
+#[tokio::test]
+async fn test_single_player_npc_interaction_proximity() {
+    let (url, _shutdown) = spawn_test_server().await;
+    let (ws_stream, _) = connect_async(&url).await.unwrap();
+    let (mut sink, mut stream) = ws_stream.split();
+
+    let join = ClientMessage::Join {
+        name: "Knight_Kay".to_string(),
+    };
+    sink.send(Message::Text(join.to_json().unwrap().into()))
+        .await
+        .unwrap();
+
+    // Doc Welcome
+    let _ = stream.next().await.unwrap().unwrap();
+
+    // 1. Nguoi choi xuat hien tai (500, 500). Truong lang o (520, 510), khoang cach ~22px <= 50px.
+    // NPC phai chuyen sang trang thai "Talk".
+    let mut saw_talk = false;
+    for _ in 0..15 {
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(200), stream.next()).await
+        {
+            if let Ok(ServerMessage::Snapshot { npcs, .. }) = ServerMessage::from_json(&text) {
+                if let Some(npc) = npcs.iter().find(|n| n.type_id == "village_elder") {
+                    if npc.state == "Talk" {
+                        saw_talk = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_talk,
+        "Truong lang phai o trang thai Talk khi nguoi choi o gan <= 50px"
+    );
+
+    // 2. Nguoi choi di chuyen ra xa (dx = 0, dy = 1 xuong phia duoi) de khoang cach > 60px
+    let mut saw_idle = false;
+    for seq in 1..=30 {
+        let input = ClientMessage::Input { seq, dx: 0, dy: 1 };
+        let _ = sink
+            .send(Message::Text(input.to_json().unwrap().into()))
+            .await;
+
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(100), stream.next()).await
+        {
+            if let Ok(ServerMessage::Snapshot { npcs, .. }) = ServerMessage::from_json(&text) {
+                if let Some(npc) = npcs.iter().find(|n| n.type_id == "village_elder") {
+                    if npc.state == "Idle" {
+                        saw_idle = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_idle,
+        "Truong lang phai quay lai Idle khi nguoi choi di xa > 60px"
     );
 }

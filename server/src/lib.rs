@@ -12,6 +12,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite;
 
+pub mod entities;
+use entities::EntityManager;
+
 pub type JoinResponse = Result<(u64, Vec<(u64, String)>), String>;
 
 /// Các sự kiện gửi từ task mạng tới game loop
@@ -49,6 +52,7 @@ pub async fn run_game_loop(mut event_rx: mpsc::UnboundedReceiver<GameEvent>) {
     let mut tick: u64 = 0;
     let mut next_player_id: u64 = 1;
     let mut players: HashMap<u64, PlayerData> = HashMap::new();
+    let mut entity_manager = EntityManager::load_from_data_or_defaults();
     let tick_duration = Duration::from_millis(1000 / TICK_RATE as u64); // 50ms (20Hz)
     let mut interval = tokio::time::interval(tick_duration);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -85,7 +89,14 @@ pub async fn run_game_loop(mut event_rx: mpsc::UnboundedReceiver<GameEvent>) {
                     }
                 }
 
-                // 3. Tạo Snapshot và broadcast tới tất cả client đang kết nối
+                // 3. Cập nhật State Machine cho quái vật và NPC
+                let player_positions: Vec<(u64, f32, f32)> = players
+                    .values()
+                    .map(|p| (p.id, p.x, p.y))
+                    .collect();
+                entity_manager.tick(dt, &player_positions);
+
+                // 4. Tạo Snapshot và broadcast tới tất cả client đang kết nối
                 let snapshot_players: Vec<PlayerSnapshot> = players
                     .values()
                     .map(|p| PlayerSnapshot {
@@ -95,9 +106,13 @@ pub async fn run_game_loop(mut event_rx: mpsc::UnboundedReceiver<GameEvent>) {
                     })
                     .collect();
 
+                let (snapshot_monsters, snapshot_npcs) = entity_manager.get_snapshots();
+
                 let snapshot = ServerMessage::Snapshot {
                     tick,
                     players: snapshot_players,
+                    monsters: snapshot_monsters,
+                    npcs: snapshot_npcs,
                 };
 
                 let mut disconnected_ids = Vec::new();
@@ -233,6 +248,12 @@ pub async fn handle_connection(
     // Task phụ trợ ghi gói tin tới WebSocket client
     let writer_task = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
+            let close_reason = if let ServerMessage::Error { ref message } = msg {
+                Some(message.clone())
+            } else {
+                None
+            };
+
             match msg.to_json() {
                 Ok(json) => {
                     if ws_sink
@@ -240,6 +261,17 @@ pub async fn handle_connection(
                         .await
                         .is_err()
                     {
+                        break;
+                    }
+
+                    if let Some(reason) = close_reason {
+                        let close_frame = tungstenite::protocol::CloseFrame {
+                            code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+                            reason: reason.into(),
+                        };
+                        let _ = ws_sink
+                            .send(tungstenite::Message::Close(Some(close_frame)))
+                            .await;
                         break;
                     }
                 }
@@ -268,6 +300,8 @@ pub async fn handle_connection(
             let _ = out_tx.send(ServerMessage::Error {
                 message: "Timeout cho goi Join".to_string(),
             });
+            drop(out_tx);
+            let _ = writer_task.await;
             return;
         }
     };
@@ -280,6 +314,8 @@ pub async fn handle_connection(
                 let _ = out_tx.send(ServerMessage::Error {
                     message: "Goi tin vuot qua kich thuoc cho phep".to_string(),
                 });
+                drop(out_tx);
+                let _ = writer_task.await;
                 return;
             }
             t.to_string()
@@ -295,6 +331,8 @@ pub async fn handle_connection(
             let _ = out_tx.send(ServerMessage::Error {
                 message: "Du lieu khong phai JSON hop le".to_string(),
             });
+            drop(out_tx);
+            let _ = writer_task.await;
             return;
         }
     };
@@ -308,6 +346,8 @@ pub async fn handle_connection(
                 let _ = out_tx.send(ServerMessage::Error {
                     message: "Ten nguoi choi khong hop le".to_string(),
                 });
+                drop(out_tx);
+                let _ = writer_task.await;
                 return;
             }
             trimmed.to_string()
@@ -317,6 +357,8 @@ pub async fn handle_connection(
             let _ = out_tx.send(ServerMessage::Error {
                 message: "Phai Join truoc khi gui Input".to_string(),
             });
+            drop(out_tx);
+            let _ = writer_task.await;
             return;
         }
     };
@@ -339,6 +381,8 @@ pub async fn handle_connection(
         Ok(Err(err_msg)) => {
             // AUTH: Ten nguoi choi da ton tai, tu choi bang Error
             let _ = out_tx.send(ServerMessage::Error { message: err_msg });
+            drop(out_tx);
+            let _ = writer_task.await;
             return;
         }
         Err(_) => return,

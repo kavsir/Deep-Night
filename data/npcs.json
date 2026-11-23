@@ -1,0 +1,28 @@
+[
+  {
+    "type_id": "village_elder",
+    "name": "Trưởng làng Galahad",
+    "spawn_x": 520.0,
+    "spawn_y": 510.0,
+    "behavior": "idle",
+    "dialogue": "Chào mừng hiệp sĩ đến với ngôi làng!"
+  },
+  {
+    "type_id": "village_guard",
+    "name": "Lính canh",
+    "spawn_x": 450.0,
+    "spawn_y": 500.0,
+    "behavior": "patrol",
+    "move_speed": 60.0,
+    "waypoints": [
+      {
+        "x": 450.0,
+        "y": 500.0
+      },
+      {
+        "x": 550.0,
+        "y": 500.0
+      }
+    ]
+  }
+]

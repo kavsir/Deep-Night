@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Số phiên bản giao thức hiện tại
-pub const PROTOCOL_VERSION: &str = "v0";
+pub const PROTOCOL_VERSION: &str = "v0.1";
 
 /// Tần số tick server (Hz)
 pub const TICK_RATE: u32 = 20;
@@ -34,6 +34,29 @@ pub struct PlayerSnapshot {
     pub id: u64,
     pub x: f32,
     pub y: f32,
+}
+
+/// Thông tin trạng thái một quái vật trong bản tin Snapshot (v0.1)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonsterSnapshot {
+    pub id: u64,
+    pub type_id: String,
+    pub x: f32,
+    pub y: f32,
+    pub state: String,
+    pub hp: i32,
+    pub max_hp: i32,
+}
+
+/// Thông tin trạng thái một NPC trong bản tin Snapshot (v0.1)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NpcSnapshot {
+    pub id: u64,
+    pub type_id: String,
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    pub state: String,
 }
 
 /// Các gói tin gửi từ Client -> Server
@@ -91,6 +114,10 @@ pub enum ServerMessage {
     Snapshot {
         tick: u64,
         players: Vec<PlayerSnapshot>,
+        #[serde(default)]
+        monsters: Vec<MonsterSnapshot>,
+        #[serde(default)]
+        npcs: Vec<NpcSnapshot>,
     },
     Error {
         message: String,
@@ -231,10 +258,45 @@ mod tests {
                     y: 40.0,
                 },
             ],
+            monsters: vec![MonsterSnapshot {
+                id: 10001,
+                type_id: "goblin".to_string(),
+                x: 100.0,
+                y: 100.0,
+                state: "Patrol".to_string(),
+                hp: 50,
+                max_hp: 50,
+            }],
+            npcs: vec![NpcSnapshot {
+                id: 20001,
+                type_id: "village_elder".to_string(),
+                name: "Trưởng làng".to_string(),
+                x: 520.0,
+                y: 510.0,
+                state: "Idle".to_string(),
+            }],
         };
         let json_snapshot = snapshot.to_json().unwrap();
         let parsed_snapshot = ServerMessage::from_json(&json_snapshot).unwrap();
         assert_eq!(parsed_snapshot, snapshot);
+
+        // Kiểm tra khả năng tương thích ngược (deserialize snapshot v0 không có monsters, npcs)
+        let v0_json = r#"{"type":"Snapshot","tick":50,"players":[{"id":1,"x":10.0,"y":20.0}]}"#;
+        let v0_parsed: ServerMessage = ServerMessage::from_json(v0_json).unwrap();
+        match v0_parsed {
+            ServerMessage::Snapshot {
+                tick,
+                players,
+                monsters,
+                npcs,
+            } => {
+                assert_eq!(tick, 50);
+                assert_eq!(players.len(), 1);
+                assert!(monsters.is_empty());
+                assert!(npcs.is_empty());
+            }
+            _ => panic!("Expected Snapshot"),
+        }
 
         let err = ServerMessage::Error {
             message: "Loi ket noi".to_string(),

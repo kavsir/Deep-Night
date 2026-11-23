@@ -1,0 +1,48 @@
+[
+  {
+    "type_id": "goblin",
+    "name": "Yêu tinh",
+    "max_hp": 50,
+    "move_speed": 100.0,
+    "chase_speed": 150.0,
+    "aggro_radius": 180.0,
+    "attack_range": 35.0,
+    "leash_radius": 300.0,
+    "respawn_time": 10.0,
+    "spawns": [
+      {
+        "spawn_x": 300.0,
+        "spawn_y": 400.0,
+        "patrol_radius": 80.0
+      },
+      {
+        "spawn_x": 700.0,
+        "spawn_y": 300.0,
+        "patrol_radius": 100.0
+      }
+    ]
+  },
+  {
+    "type_id": "wolf",
+    "name": "Sói xám",
+    "max_hp": 80,
+    "move_speed": 120.0,
+    "chase_speed": 180.0,
+    "aggro_radius": 220.0,
+    "attack_range": 40.0,
+    "leash_radius": 350.0,
+    "respawn_time": 15.0,
+    "spawns": [
+      {
+        "spawn_x": 200.0,
+        "spawn_y": 700.0,
+        "patrol_radius": 120.0
+      },
+      {
+        "spawn_x": 800.0,
+        "spawn_y": 750.0,
+        "patrol_radius": 100.0
+      }
+    ]
+  }
+]
