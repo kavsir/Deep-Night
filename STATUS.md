@@ -39,7 +39,7 @@
      - Bấm phím số `1`-`6` hoặc nhấp chuột vào ô để sử dụng vật phẩm tức thì.
 5. **Kết quả kiểm thử tự động**:
    - Rust Workspace: **14/14 tests PASSED** (`cargo test --workspace`).
-   - Godot Client Headless: **3/3 tests PASSED** (`Godot_v4.4.1-stable_win64_console.exe --headless`).
+   - Godot Client Headless: **3/3 tests PASSED** trên cả Godot 4.4.1 và **Godot 4.7.1** (`Godot_v4.7.1-stable_win64_console.exe --headless`). Toàn bộ hệ thống UI, mạng WebSocket và test suite tương thích 100%.
    - Clippy & Fmt: **CLEAN** (`cargo clippy --workspace --tests -- -D warnings`, `cargo fmt --all -- --check`).
 
 ## Yêu cầu cho agent kia
